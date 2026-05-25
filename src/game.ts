@@ -10,6 +10,7 @@ import {
   deleteToLineStart,
   isMistake,
   redsRemaining,
+  posEqual,
 } from './state.ts';
 import { attachInput, type DeleteAction } from './input.ts';
 import { loadStage } from './stages.ts';
@@ -140,6 +141,7 @@ export class Game {
   start(): void {
     this.detachInput = attachInput({
       move: (a) => this.onMove(a),
+      select: (a) => this.onSelect(a),
       delete: (a) => this.onDelete(a),
     });
     this.clock.start(performance.now());
@@ -165,6 +167,18 @@ export class Game {
     this.field.caret = next.caret;
     this.goalCol = next.goalCol;
     this.field.select = null; // plain movement collapses any selection
+  }
+
+  private onSelect(action: MoveAction): void {
+    if (this.phase !== 'playing') return;
+    // Anchor stays put from the first extend; the head moves like a caret.
+    const anchor = this.field.select ? this.field.select.anchor : { ...this.field.caret };
+    const moved = moveCaret(this.field, this.field.caret, this.goalCol, action);
+    this.field.caret = moved.caret;
+    this.goalCol = moved.goalCol;
+    const head = moved.caret;
+    // Collapsing back onto the anchor clears the selection.
+    this.field.select = posEqual(anchor, head) ? null : { anchor, head };
   }
 
   private onDelete(action: DeleteAction): void {

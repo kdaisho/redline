@@ -14,6 +14,8 @@ export type DeleteAction = 'backward' | 'word-left' | 'to-line-start';
 
 export interface InputHandlers {
   move(action: MoveAction): void;
+  /** Extend the selection by the same chord (Shift held). */
+  select(action: MoveAction): void;
   delete(action: DeleteAction): void;
 }
 
@@ -79,7 +81,11 @@ export function attachInput(handlers: InputHandlers, target: Window = window): (
     const action = movementFor(e);
     if (!action) return;
     e.preventDefault(); // arrows would otherwise scroll the page
-    repeater.start(e.code, () => handlers.move(action));
+    // Same chords; Shift extends the selection instead of moving (both repeat).
+    const fire = e.shiftKey
+      ? () => handlers.select(action)
+      : () => handlers.move(action);
+    repeater.start(e.code, fire);
   };
 
   const onKeyUp = (e: KeyboardEvent) => repeater.release(e.code);
