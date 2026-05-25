@@ -344,6 +344,15 @@ function noop(chord: Chord): DeleteResult {
   return { red: 0, blue: 0, chord };
 }
 
+/**
+ * A mistake (spec §3) is any single delete that removes ≥1 blue block — so one
+ * reckless chord through three blues is one mistake, not three (the result
+ * already aggregates the whole action).
+ */
+export function isMistake(result: DeleteResult): boolean {
+  return result.blue > 0;
+}
+
 /** A non-empty selection takes priority for every delete key (editor convention). */
 function deleteSelectionIfAny(state: FieldState): DeleteResult | null {
   if (state.select && !isSelectionEmpty(state.select)) {

@@ -2,10 +2,12 @@ import { render, type Scene } from './render.ts';
 import {
   type FieldState,
   type MoveAction,
+  type DeleteResult,
   moveCaret,
   deleteBackward,
   deleteWordLeft,
   deleteToLineStart,
+  isMistake,
 } from './state.ts';
 import { attachInput, type DeleteAction } from './input.ts';
 import { loadStage } from './stages.ts';
@@ -32,6 +34,7 @@ export class Game {
   private stageIndex = 0; // 0-based
   private strikes = 0;
   private goalCol = 0; // sticky column for vertical movement
+  private phase: 'playing' | 'over' = 'playing';
   private detachInput: (() => void) | null = null;
 
   constructor(ctx: CanvasRenderingContext2D, width: number, height: number) {
@@ -48,7 +51,8 @@ export class Game {
     });
     this.startTime = performance.now();
     const loop = (now: number) => {
-      this.elapsedMs = now - this.startTime;
+      // Time freezes at game over — the final clock is the run's metric (spec §5).
+      if (this.phase === 'playing') this.elapsedMs = now - this.startTime;
       this.update();
       render(this.ctx, this.width, this.height, this.scene());
       this.rafId = requestAnimationFrame(loop);
@@ -63,6 +67,7 @@ export class Game {
   }
 
   private onMove(action: MoveAction): void {
+    if (this.phase !== 'playing') return;
     const next = moveCaret(this.field, this.field.caret, this.goalCol, action);
     this.field.caret = next.caret;
     this.goalCol = next.goalCol;
@@ -70,20 +75,30 @@ export class Game {
   }
 
   private onDelete(action: DeleteAction): void {
-    // Result (removed red/blue + chord) drives mistakes (KDA-38) and scoring
-    // (KDA-39); wired in those issues.
+    if (this.phase !== 'playing') return;
+    let result: DeleteResult;
     switch (action) {
       case 'backward':
-        deleteBackward(this.field);
+        result = deleteBackward(this.field);
         break;
       case 'word-left':
-        deleteWordLeft(this.field);
+        result = deleteWordLeft(this.field);
         break;
       case 'to-line-start':
-        deleteToLineStart(this.field);
+        result = deleteToLineStart(this.field);
         break;
     }
     this.goalCol = this.field.caret.col;
+
+    // Scoring on clean (red-only) deletes lands in KDA-39.
+    if (isMistake(result)) this.registerMistake();
+  }
+
+  /** A blue-touching delete = one strike; two strikes ends the run (spec §3). */
+  private registerMistake(): void {
+    this.strikes++;
+    // A mistake resets the combo multiplier to ×1 — wired with scoring (KDA-39).
+    if (this.strikes >= MAX_STRIKES) this.phase = 'over';
   }
 
   private update(): void {
@@ -93,6 +108,7 @@ export class Game {
   private scene(): Scene {
     return {
       field: this.field,
+      gameOver: this.phase === 'over',
       hud: {
         score: this.score,
         timeMs: this.elapsedMs,

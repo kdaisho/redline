@@ -48,6 +48,7 @@ export interface HudModel {
 export interface Scene {
   field: FieldState;
   hud: HudModel;
+  gameOver: boolean;
 }
 
 interface FieldGeom {
@@ -84,6 +85,28 @@ export function render(
   if (scene.field.select) drawSelection(ctx, scene.field, scene.field.select, geom);
   drawBlocks(ctx, scene.field, geom);
   drawCaret(ctx, scene.field, geom);
+
+  if (scene.gameOver) drawGameOver(ctx, width, height);
+}
+
+/** Minimal game-over overlay; the full screen (best score, restart) is KDA-44. */
+function drawGameOver(ctx: CanvasRenderingContext2D, width: number, height: number): void {
+  ctx.fillStyle = 'rgba(10,12,16,0.78)';
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  ctx.fillStyle = COLORS.red;
+  ctx.font = `bold 44px ${MONO}`;
+  ctx.fillText('GAME OVER', width / 2, height / 2 - 12);
+
+  ctx.fillStyle = COLORS.hudDim;
+  ctx.font = `13px ${MONO}`;
+  ctx.fillText('TWO STRIKES', width / 2, height / 2 + 24);
+
+  ctx.textAlign = 'left'; // restore default for subsequent frames
+  ctx.textBaseline = 'top';
 }
 
 // ── HUD ──────────────────────────────────────────────────────────────────
