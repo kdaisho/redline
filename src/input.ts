@@ -9,8 +9,12 @@ import { type MoveAction } from './state.ts';
 const REPEAT_DELAY = 280; // ms held before auto-repeat begins
 const REPEAT_RATE = 45; // ms between repeats once it kicks in
 
+/** Which delete chord was pressed (spec §2). */
+export type DeleteAction = 'backward' | 'word-left' | 'to-line-start';
+
 export interface InputHandlers {
   move(action: MoveAction): void;
+  delete(action: DeleteAction): void;
 }
 
 /** Resolve a keydown into a movement action, honoring Cmd/Alt chords. */
@@ -64,6 +68,14 @@ export function attachInput(handlers: InputHandlers, target: Window = window): (
   const repeater = new Repeater();
 
   const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Backspace') {
+      e.preventDefault(); // also stops the browser's back-navigation
+      if (e.repeat) return; // deletion is one action per keypress — no hold-to-repeat
+      const action: DeleteAction = e.metaKey ? 'to-line-start' : e.altKey ? 'word-left' : 'backward';
+      handlers.delete(action);
+      return;
+    }
+
     const action = movementFor(e);
     if (!action) return;
     e.preventDefault(); // arrows would otherwise scroll the page

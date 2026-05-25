@@ -1,6 +1,13 @@
 import { render, type Scene } from './render.ts';
-import { type FieldState, type MoveAction, moveCaret } from './state.ts';
-import { attachInput } from './input.ts';
+import {
+  type FieldState,
+  type MoveAction,
+  moveCaret,
+  deleteBackward,
+  deleteWordLeft,
+  deleteToLineStart,
+} from './state.ts';
+import { attachInput, type DeleteAction } from './input.ts';
 import { loadStage } from './stages.ts';
 
 const MAX_STRIKES = 2; // spec §3
@@ -35,7 +42,10 @@ export class Game {
   }
 
   start(): void {
-    this.detachInput = attachInput({ move: (a) => this.onMove(a) });
+    this.detachInput = attachInput({
+      move: (a) => this.onMove(a),
+      delete: (a) => this.onDelete(a),
+    });
     this.startTime = performance.now();
     const loop = (now: number) => {
       this.elapsedMs = now - this.startTime;
@@ -57,6 +67,23 @@ export class Game {
     this.field.caret = next.caret;
     this.goalCol = next.goalCol;
     this.field.select = null; // plain movement collapses any selection
+  }
+
+  private onDelete(action: DeleteAction): void {
+    // Result (removed red/blue + chord) drives mistakes (KDA-38) and scoring
+    // (KDA-39); wired in those issues.
+    switch (action) {
+      case 'backward':
+        deleteBackward(this.field);
+        break;
+      case 'word-left':
+        deleteWordLeft(this.field);
+        break;
+      case 'to-line-start':
+        deleteToLineStart(this.field);
+        break;
+    }
+    this.goalCol = this.field.caret.col;
   }
 
   private update(): void {

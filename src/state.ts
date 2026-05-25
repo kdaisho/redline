@@ -270,6 +270,127 @@ export function moveCaret(
   }
 }
 
+// ── Deletion (spec §1, §2) ───────────────────────────────────────────────────
+/** Which chord drove a delete — feeds the big-chord scoring multiplier (KDA-39). */
+export type Chord = 'char' | 'word' | 'line' | 'selection';
+
+/** What a delete removed; `red`/`blue` feed scoring (KDA-39) and mistakes (KDA-38). */
+export interface DeleteResult {
+  red: number;
+  blue: number;
+  chord: Chord;
+}
+
+function countRange(lines: Line[], start: Pos, end: Pos): { red: number; blue: number } {
+  let red = 0;
+  let blue = 0;
+  const tally = (b: Block) => {
+    if (b.color === 'red') red++;
+    else if (b.color === 'blue') blue++;
+  };
+  if (start.line === end.line) {
+    const ln = lines[start.line];
+    for (let c = start.col; c < end.col; c++) tally(ln[c]);
+  } else {
+    const first = lines[start.line];
+    for (let c = start.col; c < first.length; c++) tally(first[c]);
+    for (let l = start.line + 1; l < end.line; l++) for (const b of lines[l]) tally(b);
+    const lastLn = lines[end.line];
+    for (let c = 0; c < end.col; c++) tally(lastLn[c]);
+  }
+  return { red, blue };
+}
+
+/**
+ * Remove blocks in [start, end) (reading order), collapse the gap, and merge
+ * the partial start/end lines into one. A range that merely spans a line edge
+ * (e.g. {l-1,end}→{l,0}) joins the two lines. If the result is empty the line
+ * is dropped and lines shift up (spec §1). Mutates `state`; returns the tally.
+ */
+export function deleteRange(
+  state: FieldState,
+  start: Pos,
+  end: Pos,
+  chord: Chord,
+): DeleteResult {
+  const { red, blue } = countRange(state.lines, start, end);
+
+  const head = state.lines[start.line].slice(0, start.col);
+  const tail = state.lines[end.line].slice(end.col);
+  const merged = head.concat(tail);
+  const before = state.lines.slice(0, start.line);
+  const after = state.lines.slice(end.line + 1);
+
+  let newLines: Line[];
+  let caret: Pos;
+  if (merged.length === 0) {
+    // emptied line is removed entirely; following lines shift up
+    newLines = [...before, ...after];
+    if (newLines.length === 0) caret = { line: 0, col: 0 };
+    else if (start.line < newLines.length) caret = { line: start.line, col: 0 };
+    else caret = { line: newLines.length - 1, col: newLines[newLines.length - 1].length };
+  } else {
+    newLines = [...before, merged, ...after];
+    caret = { line: start.line, col: start.col };
+  }
+
+  state.lines = newLines;
+  state.caret = caret;
+  state.select = null;
+  return { red, blue, chord };
+}
+
+function noop(chord: Chord): DeleteResult {
+  return { red: 0, blue: 0, chord };
+}
+
+/** A non-empty selection takes priority for every delete key (editor convention). */
+function deleteSelectionIfAny(state: FieldState): DeleteResult | null {
+  if (state.select && !isSelectionEmpty(state.select)) {
+    const { start, end } = normalizeSelection(state.select);
+    return deleteRange(state, start, end, 'selection');
+  }
+  return null;
+}
+
+/** Backspace: delete selection, else one block left (joining the line at col 0). */
+export function deleteBackward(state: FieldState): DeleteResult {
+  const sel = deleteSelectionIfAny(state);
+  if (sel) return sel;
+  const { line, col } = state.caret;
+  if (col > 0) return deleteRange(state, { line, col: col - 1 }, { line, col }, 'char');
+  if (line > 0) {
+    return deleteRange(state, { line: line - 1, col: lineLength(state, line - 1) }, { line, col: 0 }, 'char');
+  }
+  return noop('char');
+}
+
+/** Alt+Backspace: delete the word to the left (or join the line at col 0). */
+export function deleteWordLeft(state: FieldState): DeleteResult {
+  const sel = deleteSelectionIfAny(state);
+  if (sel) return sel;
+  const { line, col } = state.caret;
+  if (col > 0) {
+    return deleteRange(state, { line, col: wordLeftCol(state.lines[line], col) }, { line, col }, 'word');
+  }
+  if (line > 0) {
+    return deleteRange(state, { line: line - 1, col: lineLength(state, line - 1) }, { line, col: 0 }, 'word');
+  }
+  return noop('word');
+}
+
+/** Cmd+Backspace: delete from caret to line start (or join the line at col 0). */
+export function deleteToLineStart(state: FieldState): DeleteResult {
+  const sel = deleteSelectionIfAny(state);
+  if (sel) return sel;
+  const { line, col } = state.caret;
+  if (col > 0) return deleteRange(state, { line, col: 0 }, { line, col }, 'line');
+  if (line > 0) {
+    return deleteRange(state, { line: line - 1, col: lineLength(state, line - 1) }, { line, col: 0 }, 'line');
+  }
+  return noop('line');
+}
+
 // ── internal ───────────────────────────────────────────────────────────────
 function clamp(n: number, lo: number, hi: number): number {
   return n < lo ? lo : n > hi ? hi : n;
