@@ -15,6 +15,37 @@ import { loadStage } from './stages.ts';
 
 const MAX_STRIKES = 2; // spec §3
 
+// ── Timer (spec §5) ─────────────────────────────────────────────────────────
+/**
+ * A monotonic count-up clock: no limit, no penalties, pure elapsed time. Driven
+ * by injected timestamps (rAF / performance.now) so it's deterministic and
+ * testable. Freezing captures the final time exactly at the game-over instant —
+ * the run's speedrun metric (lower is better).
+ */
+export class Clock {
+  private startMs = 0;
+  private frozenMs: number | null = null;
+  private running = false;
+
+  start(now: number): void {
+    this.startMs = now;
+    this.frozenMs = null;
+    this.running = true;
+  }
+
+  freeze(now: number): void {
+    if (!this.running) return;
+    this.frozenMs = now - this.startMs;
+    this.running = false;
+  }
+
+  /** Elapsed ms: the frozen value once stopped, else live, else 0 before start. */
+  elapsed(now: number): number {
+    if (this.frozenMs !== null) return this.frozenMs;
+    return this.running ? now - this.startMs : 0;
+  }
+}
+
 // ── Scoring (spec §4) ───────────────────────────────────────────────────────
 const BASE_PER_RED = 10;
 
@@ -87,8 +118,8 @@ export class Game {
   private readonly height: number;
 
   private rafId = 0;
-  private startTime = 0;
-  private elapsedMs = 0;
+  private readonly clock = new Clock();
+  private elapsedMs = 0; // cached each frame for scene + combo timing
 
   private field: FieldState;
   private scoreState = initialScore();
@@ -110,10 +141,10 @@ export class Game {
       move: (a) => this.onMove(a),
       delete: (a) => this.onDelete(a),
     });
-    this.startTime = performance.now();
+    this.clock.start(performance.now());
     const loop = (now: number) => {
-      // Time freezes at game over — the final clock is the run's metric (spec §5).
-      if (this.phase === 'playing') this.elapsedMs = now - this.startTime;
+      // Clock freezes itself at game over — the final time is the metric (§5).
+      this.elapsedMs = this.clock.elapsed(now);
       this.update();
       render(this.ctx, this.width, this.height, this.scene());
       this.rafId = requestAnimationFrame(loop);
@@ -159,7 +190,10 @@ export class Game {
   /** A blue-touching delete = one strike; two strikes ends the run (spec §3). */
   private registerMistake(): void {
     this.strikes++;
-    if (this.strikes >= MAX_STRIKES) this.phase = 'over';
+    if (this.strikes >= MAX_STRIKES) {
+      this.phase = 'over';
+      this.clock.freeze(performance.now()); // capture the final time precisely
+    }
   }
 
   private update(): void {
