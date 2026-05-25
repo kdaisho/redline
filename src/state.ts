@@ -324,10 +324,11 @@ function collectRemoved(
 }
 
 /**
- * Remove blocks in [start, end) (reading order), collapse the gap, and merge
- * the partial start/end lines into one. A range that merely spans a line edge
- * (e.g. {l-1,end}→{l,0}) joins the two lines. If the result is empty the line
- * is dropped and lines shift up (spec §1). Mutates `state`; returns the tally.
+ * Remove blocks in [start, end) (reading order), collapsing the gap *within
+ * each row*. Rows are permanent: a row that loses all its blocks stays in place
+ * as an empty row, and lines are never joined or shifted up. Deleting a space
+ * still merges adjacent words (they become neighbors after the splice).
+ * Mutates `state`; returns the tally + removed cells.
  */
 export function deleteRange(
   state: FieldState,
@@ -337,27 +338,13 @@ export function deleteRange(
 ): DeleteResult {
   const { red, blue, cells } = collectRemoved(state.lines, start, end);
 
-  const head = state.lines[start.line].slice(0, start.col);
-  const tail = state.lines[end.line].slice(end.col);
-  const merged = head.concat(tail);
-  const before = state.lines.slice(0, start.line);
-  const after = state.lines.slice(end.line + 1);
-
-  let newLines: Line[];
-  let caret: Pos;
-  if (merged.length === 0) {
-    // emptied line is removed entirely; following lines shift up
-    newLines = [...before, ...after];
-    if (newLines.length === 0) caret = { line: 0, col: 0 };
-    else if (start.line < newLines.length) caret = { line: start.line, col: 0 };
-    else caret = { line: newLines.length - 1, col: newLines[newLines.length - 1].length };
-  } else {
-    newLines = [...before, merged, ...after];
-    caret = { line: start.line, col: start.col };
+  for (let l = start.line; l <= end.line; l++) {
+    const from = l === start.line ? start.col : 0;
+    const to = l === end.line ? end.col : state.lines[l].length;
+    state.lines[l] = [...state.lines[l].slice(0, from), ...state.lines[l].slice(to)];
   }
 
-  state.lines = newLines;
-  state.caret = caret;
+  state.caret = { line: start.line, col: start.col };
   state.select = null;
   return { red, blue, chord, cells };
 }
@@ -384,19 +371,16 @@ function deleteSelectionIfAny(state: FieldState): DeleteResult | null {
   return null;
 }
 
-/** Backspace: delete selection, else one block left (joining the line at col 0). */
+/** Backspace: delete selection, else one block left. No-op at column 0 (rows never join). */
 export function deleteBackward(state: FieldState): DeleteResult {
   const sel = deleteSelectionIfAny(state);
   if (sel) return sel;
   const { line, col } = state.caret;
   if (col > 0) return deleteRange(state, { line, col: col - 1 }, { line, col }, 'char');
-  if (line > 0) {
-    return deleteRange(state, { line: line - 1, col: lineLength(state, line - 1) }, { line, col: 0 }, 'char');
-  }
   return noop('char');
 }
 
-/** Alt+Backspace: delete the word to the left (or join the line at col 0). */
+/** Alt+Backspace: delete the word to the left. No-op at column 0. */
 export function deleteWordLeft(state: FieldState): DeleteResult {
   const sel = deleteSelectionIfAny(state);
   if (sel) return sel;
@@ -404,21 +388,15 @@ export function deleteWordLeft(state: FieldState): DeleteResult {
   if (col > 0) {
     return deleteRange(state, { line, col: wordLeftCol(state.lines[line], col) }, { line, col }, 'word');
   }
-  if (line > 0) {
-    return deleteRange(state, { line: line - 1, col: lineLength(state, line - 1) }, { line, col: 0 }, 'word');
-  }
   return noop('word');
 }
 
-/** Cmd+Backspace: delete from caret to line start (or join the line at col 0). */
+/** Cmd+Backspace: delete from caret to line start. No-op at column 0. */
 export function deleteToLineStart(state: FieldState): DeleteResult {
   const sel = deleteSelectionIfAny(state);
   if (sel) return sel;
   const { line, col } = state.caret;
   if (col > 0) return deleteRange(state, { line, col: 0 }, { line, col }, 'line');
-  if (line > 0) {
-    return deleteRange(state, { line: line - 1, col: lineLength(state, line - 1) }, { line, col: 0 }, 'line');
-  }
   return noop('line');
 }
 

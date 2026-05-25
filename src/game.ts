@@ -58,26 +58,41 @@ export function saveBest(b: Best): void {
  * the run's speedrun metric (lower is better).
  */
 export class Clock {
-  private startMs = 0;
-  private frozenMs: number | null = null;
+  private accumMs = 0; // time banked from finished segments
+  private segStart = 0; // start of the current running segment
   private running = false;
+  private frozenMs: number | null = null;
 
   start(now: number): void {
-    this.startMs = now;
+    this.accumMs = 0;
+    this.segStart = now;
+    this.running = true;
     this.frozenMs = null;
+  }
+
+  /** Pause between stages so the clock doesn't count while reading the screen. */
+  pause(now: number): void {
+    if (!this.running || this.frozenMs !== null) return;
+    this.accumMs += now - this.segStart;
+    this.running = false;
+  }
+
+  resume(now: number): void {
+    if (this.running || this.frozenMs !== null) return;
+    this.segStart = now;
     this.running = true;
   }
 
   freeze(now: number): void {
-    if (!this.running) return;
-    this.frozenMs = now - this.startMs;
+    if (this.frozenMs !== null) return;
+    this.frozenMs = this.elapsed(now);
     this.running = false;
   }
 
-  /** Elapsed ms: the frozen value once stopped, else live, else 0 before start. */
+  /** Elapsed ms: frozen value once stopped, else banked + live segment. */
   elapsed(now: number): number {
     if (this.frozenMs !== null) return this.frozenMs;
-    return this.running ? now - this.startMs : 0;
+    return this.running ? this.accumMs + (now - this.segStart) : this.accumMs;
   }
 }
 
@@ -161,7 +176,7 @@ export class Game {
   private stageIndex = 0; // 0-based
   private strikes = 0;
   private goalCol = 0; // sticky column for vertical movement
-  private phase: 'start' | 'playing' | 'over' = 'start';
+  private phase: 'start' | 'playing' | 'cleared' | 'over' = 'start';
   private best: Best = { score: 0, stage: 0, timeMs: 0 };
   private isNewBest = false;
   private detachInput: (() => void) | null = null;
@@ -171,6 +186,7 @@ export class Game {
   private lastInputMs = 0;
   private comboPulseMs = -Infinity;
   private strikeFlashMs = -Infinity;
+  private clearedFlashMs = -Infinity;
 
   constructor(ctx: CanvasRenderingContext2D, width: number, height: number) {
     this.ctx = ctx;
@@ -197,10 +213,14 @@ export class Game {
     this.rafId = requestAnimationFrame(loop);
   }
 
-  /** Enter/Space starts a run from the start screen, or restarts from game over. */
+  /** Enter/Space: start a run, advance from a cleared stage, or restart from game over. */
   private onConfirm(): void {
     if (this.phase === 'playing') return;
-    this.beginRun();
+    if (this.phase === 'cleared') {
+      this.advanceStage();
+      return;
+    }
+    this.beginRun(); // from 'start' or 'over'
   }
 
   /** Reset all run state to a fresh stage 1 and start the clock. */
@@ -213,6 +233,7 @@ export class Game {
     this.flashes = [];
     this.comboPulseMs = -Infinity;
     this.strikeFlashMs = -Infinity;
+    this.clearedFlashMs = -Infinity;
     this.isNewBest = false;
     this.phase = 'playing';
     const now = performance.now();
@@ -281,18 +302,31 @@ export class Game {
     if (this.scoreState.comboLevel > prevLevel) this.comboPulseMs = now; // pulse on build
     if (isMistake(result)) this.registerMistake();
 
-    // Game over wins over advancing (a delete can clear the last red AND be a
+    // Game over wins over clearing (a delete can clear the last red AND be a
     // second-strike mistake at once).
     if (this.phase !== 'playing') return;
-    if (redsRemaining(this.field) === 0) this.advanceStage();
+    if (redsRemaining(this.field) === 0) this.stageCleared();
   }
 
-  /** Cleared every red → next (denser/taller) stage; score/strikes/time carry. */
+  /** Cleared every red → celebrate and wait for Enter; pause the clock meanwhile. */
+  private stageCleared(): void {
+    this.phase = 'cleared';
+    const now = performance.now();
+    this.clock.pause(now); // time stops while the celebration is up
+    this.clearedFlashMs = now;
+  }
+
+  /** Advance to the next (denser/taller) stage; score/strikes/time carry forward. */
   private advanceStage(): void {
     this.stageIndex++;
     this.field = loadStage(this.stageIndex);
     this.goalCol = 0;
-    // Combo carries across the boundary; its 1.5s window applies as usual.
+    this.flashes = [];
+    this.phase = 'playing';
+    const now = performance.now();
+    this.lastInputMs = now;
+    this.clock.resume(now); // resume the run clock
+    // Combo carries across the boundary; its window applies as usual.
   }
 
   /** A blue-touching delete = one strike; two strikes ends the run (spec §3). */
@@ -346,6 +380,7 @@ export class Game {
         comboLevel: this.scoreState.comboLevel,
         comboPulseMs: this.comboPulseMs,
         strikeFlashMs: this.strikeFlashMs,
+        clearedFlashMs: this.clearedFlashMs,
         lastInputMs: this.lastInputMs,
       },
     };

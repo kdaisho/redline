@@ -30,9 +30,11 @@ export const COLORS = {
   blue: '#7fb8f0',
   blueStroke: '#5e8fc4',
   caret: '#b2bdcd',
-  selection: 'rgba(150,180,235,0.20)',
+  selection: 'rgba(150,178,255,0.32)', // translucent overlay on top of bars
+  selectionEdge: '#aebfff', // crisp bright outline so bounds are obvious
   strikeOn: '#f5a0a0',
   strikeOff: '#2d3748',
+  cleared: '#9be08a', // stage-clear celebration accent (green)
 } as const;
 
 // ── layout ───────────────────────────────────────────────────────────────
@@ -64,6 +66,7 @@ export interface Fx {
   comboLevel: number; // 0 hides the combo readout; else shows ×2^level
   comboPulseMs: number; // when the combo last incremented
   strikeFlashMs: number; // when the last strike landed
+  clearedFlashMs: number; // when the current stage was cleared
   lastInputMs: number; // when the caret last moved (drives blink)
 }
 
@@ -78,7 +81,7 @@ export interface HudModel {
   maxStrikes: number;
 }
 
-export type Phase = 'start' | 'playing' | 'over';
+export type Phase = 'start' | 'playing' | 'cleared' | 'over';
 
 export interface Scene {
   field: FieldState;
@@ -144,14 +147,33 @@ export function render(
   drawGutter(ctx, scene.field, geom, frame);
   drawFrame(ctx, frame);
 
-  if (scene.field.select) drawSelection(ctx, scene.field, scene.field.select, geom);
   drawBlocks(ctx, scene.field, geom);
+  // selection drawn AFTER blocks so the highlight reads clearly over the bars
+  if (scene.field.select) drawSelection(ctx, scene.field, scene.field.select, geom);
   drawFlashes(ctx, scene.fx, geom, nowMs);
   drawCaret(ctx, scene.field, scene.fx, nowMs, geom);
 
   drawStrikeFlash(ctx, width, height, scene.fx, nowMs);
+  drawClearedFlash(ctx, width, height, scene.fx, nowMs);
   if (scene.phase === 'start') drawStartScreen(ctx, width, height, scene.best);
+  else if (scene.phase === 'cleared') drawStageCleared(ctx, width, height, scene, nowMs);
   else if (scene.phase === 'over') drawGameOver(ctx, width, height, scene);
+}
+
+/** Gentle green full-frame flash when a stage is cleared. */
+function drawClearedFlash(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  fx: Fx,
+  nowMs: number,
+): void {
+  const p = (nowMs - fx.clearedFlashMs) / 420;
+  if (p < 0 || p >= 1) return;
+  ctx.globalAlpha = (1 - p) * 0.3;
+  ctx.fillStyle = COLORS.cleared;
+  ctx.fillRect(0, 0, width, height);
+  ctx.globalAlpha = 1;
 }
 
 /** Faint full-width band behind the caret's row — classic editor current-line. */
@@ -296,6 +318,46 @@ function drawStartScreen(
   ctx.fillStyle = COLORS.text;
   ctx.font = `bold 14px ${MONO}`;
   ctx.fillText('PRESS ENTER TO START', cx, height / 2 + 104);
+
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+}
+
+/** Stage-clear celebration: cleared banner, running totals, advance prompt. */
+function drawStageCleared(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  scene: Scene,
+  nowMs: number,
+): void {
+  ctx.fillStyle = 'rgba(7,12,10,0.82)';
+  ctx.fillRect(0, 0, width, height);
+
+  const cx = width / 2;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  // title scales in for a little pop
+  const grow = clamp01((nowMs - scene.fx.clearedFlashMs) / 260);
+  const size = 30 + grow * 18;
+  ctx.fillStyle = COLORS.cleared;
+  ctx.font = `bold ${size}px ${MONO}`;
+  ctx.fillText('✓ STAGE CLEARED', cx, height / 2 - 84);
+
+  ctx.fillStyle = COLORS.hudDim;
+  ctx.font = `12px ${MONO}`;
+  ctx.fillText(`STAGE ${scene.hud.stage} DONE`, cx, height / 2 - 48);
+
+  let y = height / 2 - 14;
+  statRow(ctx, cx, y, 'SCORE', String(scene.hud.score), COLORS.text);
+  y += 26;
+  statRow(ctx, cx, y, 'TIME', formatTime(scene.hud.timeMs), COLORS.text);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COLORS.text;
+  ctx.font = `bold 14px ${MONO}`;
+  ctx.fillText('PRESS ENTER FOR NEXT STAGE', cx, height / 2 + 80);
 
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
@@ -487,7 +549,6 @@ function drawSelection(
   geom: FieldGeom,
 ): void {
   const { start, end } = normalizeSelection(sel);
-  ctx.fillStyle = COLORS.selection;
   for (let r = start.line; r <= end.line; r++) {
     const len = field.lines[r]?.length ?? 0;
     const from = r === start.line ? start.col : 0;
@@ -495,6 +556,13 @@ function drawSelection(
     if (to <= from) continue;
     const x = geom.ox + from * BW;
     const y = geom.oy + r * LH;
-    ctx.fillRect(x, y, (to - from) * BW, LH - 2);
+    const w = (to - from) * BW;
+    const h = LH - 2;
+    // translucent overlay tints the bars, bright outline pins the bounds
+    ctx.fillStyle = COLORS.selection;
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = COLORS.selectionEdge;
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(x + 0.75, y + 0.75, w - 1.5, h - 1.5);
   }
 }
