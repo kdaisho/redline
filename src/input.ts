@@ -17,6 +17,8 @@ export interface InputHandlers {
   /** Extend the selection by the same chord (Shift held). */
   select(action: MoveAction): void;
   delete(action: DeleteAction): void;
+  /** Enter/Space — start or restart a run (start & game-over screens). */
+  confirm(): void;
 }
 
 /** Resolve a keydown into a movement action, honoring Cmd/Alt chords. */
@@ -70,6 +72,12 @@ export function attachInput(handlers: InputHandlers, target: Window = window): (
   const repeater = new Repeater();
 
   const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      if (!e.repeat) handlers.confirm();
+      return;
+    }
+
     if (e.key === 'Backspace') {
       e.preventDefault(); // also stops the browser's back-navigation
       if (e.repeat) return; // deletion is one action per keypress — no hold-to-repeat

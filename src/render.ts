@@ -78,11 +78,15 @@ export interface HudModel {
   maxStrikes: number;
 }
 
+export type Phase = 'start' | 'playing' | 'over';
+
 export interface Scene {
   field: FieldState;
   hud: HudModel;
   fx: Fx;
-  gameOver: boolean;
+  phase: Phase;
+  best: number; // best score ever (localStorage), shown on start/over screens
+  isNewBest: boolean; // this run beat the stored best
 }
 
 interface FieldGeom {
@@ -146,7 +150,8 @@ export function render(
   drawCaret(ctx, scene.field, scene.fx, nowMs, geom);
 
   drawStrikeFlash(ctx, width, height, scene.fx, nowMs);
-  if (scene.gameOver) drawGameOver(ctx, width, height);
+  if (scene.phase === 'start') drawStartScreen(ctx, width, height, scene.best);
+  else if (scene.phase === 'over') drawGameOver(ctx, width, height, scene);
 }
 
 /** Faint full-width band behind the caret's row — classic editor current-line. */
@@ -230,23 +235,111 @@ function drawStrikeFlash(
   ctx.globalAlpha = 1;
 }
 
-/** Minimal game-over overlay; the full screen (best score, restart) is KDA-44. */
-function drawGameOver(ctx: CanvasRenderingContext2D, width: number, height: number): void {
-  ctx.fillStyle = 'rgba(7,10,14,0.82)';
+/** Centered helper: draws one stat row "LABEL  value" and returns next y. */
+function statRow(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  y: number,
+  label: string,
+  value: string,
+  valueColor: string,
+): void {
+  ctx.font = `13px ${MONO}`;
+  ctx.fillStyle = COLORS.hudDim;
+  ctx.textAlign = 'right';
+  ctx.fillText(label, cx - 10, y);
+  ctx.fillStyle = valueColor;
+  ctx.font = `16px ${MONO}`;
+  ctx.textAlign = 'left';
+  ctx.fillText(value, cx + 10, y);
+}
+
+/** Start screen: title, the rules, controls, and the best score so far. */
+function drawStartScreen(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  best: number,
+): void {
+  ctx.fillStyle = 'rgba(7,10,14,0.86)';
   ctx.fillRect(0, 0, width, height);
 
+  const cx = width / 2;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  ctx.fillStyle = COLORS.text;
+  ctx.font = `bold 56px ${MONO}`;
+  ctx.fillText('REDLINE', cx, height / 2 - 96);
+
+  ctx.font = `14px ${MONO}`;
+  ctx.fillStyle = COLORS.red;
+  ctx.fillText('RED = DELETE', cx - 70, height / 2 - 52);
+  ctx.fillStyle = COLORS.blue;
+  ctx.fillText('BLUE = KEEP', cx + 70, height / 2 - 52);
+
+  ctx.fillStyle = COLORS.hudDim;
+  ctx.font = `12px ${MONO}`;
+  const lines = [
+    'move  ← →   ·  word  ⌥← ⌥→   ·  line  ⌘← ⌘→   ·  ↑ ↓',
+    'select  ⇧ + move        delete  ⌫   ⌥⌫ word   ⌘⌫ line',
+    'clear every red to advance · two mistakes ends the run',
+  ];
+  lines.forEach((t, i) => ctx.fillText(t, cx, height / 2 - 8 + i * 22));
+
+  if (best > 0) {
+    ctx.fillStyle = COLORS.hudDim;
+    ctx.font = `13px ${MONO}`;
+    ctx.fillText(`BEST  ${best}`, cx, height / 2 + 66);
+  }
+
+  ctx.fillStyle = COLORS.text;
+  ctx.font = `bold 14px ${MONO}`;
+  ctx.fillText('PRESS ENTER TO START', cx, height / 2 + 104);
+
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+}
+
+/** Game-over screen: stage reached, final score, total time, best, restart. */
+function drawGameOver(ctx: CanvasRenderingContext2D, width: number, height: number, scene: Scene): void {
+  ctx.fillStyle = 'rgba(7,10,14,0.86)';
+  ctx.fillRect(0, 0, width, height);
+
+  const cx = width / 2;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
   ctx.fillStyle = COLORS.red;
-  ctx.font = `bold 44px ${MONO}`;
-  ctx.fillText('GAME OVER', width / 2, height / 2 - 12);
+  ctx.font = `bold 46px ${MONO}`;
+  ctx.fillText('GAME OVER', cx, height / 2 - 92);
 
   ctx.fillStyle = COLORS.hudDim;
-  ctx.font = `13px ${MONO}`;
-  ctx.fillText('TWO STRIKES', width / 2, height / 2 + 24);
+  ctx.font = `12px ${MONO}`;
+  ctx.fillText('TWO MISTAKES', cx, height / 2 - 58);
 
-  ctx.textAlign = 'left'; // restore default for subsequent frames
+  // stat rows, centered around cx
+  let y = height / 2 - 22;
+  statRow(ctx, cx, y, 'STAGE', String(scene.hud.stage), COLORS.text);
+  y += 26;
+  statRow(ctx, cx, y, 'SCORE', String(scene.hud.score), COLORS.text);
+  y += 26;
+  statRow(ctx, cx, y, 'TIME', formatTime(scene.hud.timeMs), COLORS.text);
+  y += 26;
+  statRow(ctx, cx, y, 'BEST', String(scene.best), scene.isNewBest ? COLORS.blue : COLORS.hudDim);
+
+  ctx.textAlign = 'center';
+  if (scene.isNewBest) {
+    ctx.fillStyle = COLORS.blue;
+    ctx.font = `bold 13px ${MONO}`;
+    ctx.fillText('★ NEW BEST ★', cx, y + 24);
+  }
+
+  ctx.fillStyle = COLORS.text;
+  ctx.font = `bold 14px ${MONO}`;
+  ctx.fillText('PRESS ENTER TO RESTART', cx, height / 2 + 104);
+
+  ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
 }
 

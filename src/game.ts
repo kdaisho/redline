@@ -18,6 +18,38 @@ import { loadStage } from './stages.ts';
 const MAX_STRIKES = 2; // spec §3
 const FLASH_LIFETIME_MS = 220; // prune snap-out flashes after they finish drawing
 
+// ── best score persistence (spec §6) ────────────────────────────────────────
+const BEST_KEY = 'redline.best';
+
+export interface Best {
+  score: number;
+  stage: number;
+  timeMs: number;
+}
+
+export function loadBest(): Best {
+  try {
+    const raw = localStorage.getItem(BEST_KEY);
+    if (raw) {
+      const b = JSON.parse(raw) as Partial<Best>;
+      if (typeof b.score === 'number') {
+        return { score: b.score, stage: b.stage ?? 0, timeMs: b.timeMs ?? 0 };
+      }
+    }
+  } catch {
+    // localStorage unavailable (private mode etc.) — fall through to default
+  }
+  return { score: 0, stage: 0, timeMs: 0 };
+}
+
+export function saveBest(b: Best): void {
+  try {
+    localStorage.setItem(BEST_KEY, JSON.stringify(b));
+  } catch {
+    // ignore persistence failures
+  }
+}
+
 // ── Timer (spec §5) ─────────────────────────────────────────────────────────
 /**
  * A monotonic count-up clock: no limit, no penalties, pure elapsed time. Driven
@@ -129,7 +161,9 @@ export class Game {
   private stageIndex = 0; // 0-based
   private strikes = 0;
   private goalCol = 0; // sticky column for vertical movement
-  private phase: 'playing' | 'over' = 'playing';
+  private phase: 'start' | 'playing' | 'over' = 'start';
+  private best: Best = { score: 0, stage: 0, timeMs: 0 };
+  private isNewBest = false;
   private detachInput: (() => void) | null = null;
 
   // ── transient visual effects (KDA-42), timed on the animation clock ──
@@ -150,17 +184,40 @@ export class Game {
       move: (a) => this.onMove(a),
       select: (a) => this.onSelect(a),
       delete: (a) => this.onDelete(a),
+      confirm: () => this.onConfirm(),
     });
-    this.lastInputMs = performance.now();
-    this.clock.start(this.lastInputMs);
+    this.best = loadBest();
+    // The run waits on the start screen; the clock starts only on beginRun().
     const loop = (now: number) => {
-      // Clock freezes itself at game over — the final time is the metric (§5).
       this.elapsedMs = this.clock.elapsed(now);
       this.update(now);
       render(this.ctx, this.width, this.height, this.scene(), now);
       this.rafId = requestAnimationFrame(loop);
     };
     this.rafId = requestAnimationFrame(loop);
+  }
+
+  /** Enter/Space starts a run from the start screen, or restarts from game over. */
+  private onConfirm(): void {
+    if (this.phase === 'playing') return;
+    this.beginRun();
+  }
+
+  /** Reset all run state to a fresh stage 1 and start the clock. */
+  private beginRun(): void {
+    this.stageIndex = 0;
+    this.field = loadStage(0);
+    this.scoreState = initialScore();
+    this.strikes = 0;
+    this.goalCol = 0;
+    this.flashes = [];
+    this.comboPulseMs = -Infinity;
+    this.strikeFlashMs = -Infinity;
+    this.isNewBest = false;
+    this.phase = 'playing';
+    const now = performance.now();
+    this.lastInputMs = now;
+    this.clock.start(now);
   }
 
   stop(): void {
@@ -245,6 +302,22 @@ export class Game {
     if (this.strikes >= MAX_STRIKES) {
       this.phase = 'over';
       this.clock.freeze(performance.now()); // capture the final time precisely
+      this.finalizeRun();
+    }
+  }
+
+  /** On game over, record a new best score (higher wins) to localStorage. */
+  private finalizeRun(): void {
+    const final: Best = {
+      score: this.scoreState.score,
+      stage: this.stageIndex + 1,
+      timeMs: this.clock.elapsed(performance.now()),
+    };
+    this.elapsedMs = final.timeMs;
+    if (final.score > this.best.score) {
+      this.best = final;
+      this.isNewBest = true;
+      saveBest(this.best);
     }
   }
 
@@ -258,7 +331,9 @@ export class Game {
   private scene(): Scene {
     return {
       field: this.field,
-      gameOver: this.phase === 'over',
+      phase: this.phase,
+      best: this.best.score,
+      isNewBest: this.isNewBest,
       hud: {
         score: this.scoreState.score,
         timeMs: this.elapsedMs,
