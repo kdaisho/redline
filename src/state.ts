@@ -158,6 +158,118 @@ export function redsRemaining(state: FieldState): number {
   return countColor(state, 'red');
 }
 
+// ── Caret movement (spec §2) ────────────────────────────────────────────────
+export type MoveAction =
+  | 'char-left'
+  | 'char-right'
+  | 'word-left'
+  | 'word-right'
+  | 'line-start'
+  | 'line-end'
+  | 'line-up'
+  | 'line-down'
+  | 'doc-start'
+  | 'doc-end';
+
+export interface CaretMove {
+  caret: Pos;
+  /** Sticky target column carried across vertical moves (keep-column). */
+  goalCol: number;
+}
+
+/**
+ * Column of the next word boundary to the left: skip any spaces, then skip the
+ * color run. Shared by Alt-movement (KDA-35) and word-deletion (KDA-37) so
+ * "word" means the same thing everywhere.
+ */
+export function wordLeftCol(blocks: Line, col: number): number {
+  let i = clamp(col, 0, blocks.length);
+  while (i > 0 && blocks[i - 1].color === null) i--;
+  if (i > 0) {
+    const kind = blocks[i - 1].color;
+    while (i > 0 && blocks[i - 1].color === kind) i--;
+  }
+  return i;
+}
+
+/** Column of the next word boundary to the right: skip spaces, then the run. */
+export function wordRightCol(blocks: Line, col: number): number {
+  let i = clamp(col, 0, blocks.length);
+  while (i < blocks.length && blocks[i].color === null) i++;
+  if (i < blocks.length) {
+    const kind = blocks[i].color;
+    while (i < blocks.length && blocks[i].color === kind) i++;
+  }
+  return i;
+}
+
+/**
+ * Pure caret movement: given the current caret and sticky goal column, return
+ * the new caret + goal column for an action. Horizontal moves reset the goal
+ * column to where they land; vertical moves preserve it and clamp into the
+ * target line (keep-column behavior). Char/word moves wrap across line edges.
+ */
+export function moveCaret(
+  state: FieldState,
+  caret: Pos,
+  goalCol: number,
+  action: MoveAction,
+): CaretMove {
+  const last = Math.max(0, state.lines.length - 1);
+  const len = (i: number) => lineLength(state, i);
+  const at = (line: number, col: number): CaretMove => ({ caret: { line, col }, goalCol: col });
+
+  switch (action) {
+    case 'char-left':
+      if (caret.col > 0) return at(caret.line, caret.col - 1);
+      if (caret.line > 0) return at(caret.line - 1, len(caret.line - 1));
+      return at(caret.line, caret.col);
+
+    case 'char-right':
+      if (caret.col < len(caret.line)) return at(caret.line, caret.col + 1);
+      if (caret.line < last) return at(caret.line + 1, 0);
+      return at(caret.line, caret.col);
+
+    case 'word-left':
+      if (caret.col === 0) {
+        return caret.line > 0 ? at(caret.line - 1, len(caret.line - 1)) : at(caret.line, 0);
+      }
+      return at(caret.line, wordLeftCol(state.lines[caret.line], caret.col));
+
+    case 'word-right':
+      if (caret.col >= len(caret.line)) {
+        return caret.line < last ? at(caret.line + 1, 0) : at(caret.line, caret.col);
+      }
+      return at(caret.line, wordRightCol(state.lines[caret.line], caret.col));
+
+    case 'line-start':
+      return at(caret.line, 0);
+
+    case 'line-end':
+      return at(caret.line, len(caret.line));
+
+    case 'line-up':
+      if (caret.line > 0) {
+        const line = caret.line - 1;
+        return { caret: { line, col: Math.min(goalCol, len(line)) }, goalCol };
+      }
+      return at(0, 0);
+
+    case 'line-down':
+      if (caret.line < last) {
+        const line = caret.line + 1;
+        return { caret: { line, col: Math.min(goalCol, len(line)) }, goalCol };
+      }
+      return at(last, len(last));
+
+    case 'doc-start':
+      return at(0, 0);
+
+    case 'doc-end':
+      return at(last, len(last));
+  }
+}
+
 // ── internal ───────────────────────────────────────────────────────────────
 function clamp(n: number, lo: number, hi: number): number {
   return n < lo ? lo : n > hi ? hi : n;

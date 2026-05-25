@@ -1,5 +1,86 @@
 /**
- * Keymap (macOS chords) → actions, with hold-to-repeat handling.
- * Implemented in KDA-35 (movement), KDA-36 (selection), KDA-37 (deletion).
+ * Keyboard input (spec §2): macOS movement chords mapped to actions, with
+ * hold-to-repeat. We run our own repeat clock (not the OS key-repeat) so the
+ * cadence is consistent regardless of system settings. Selection (KDA-36) and
+ * deletion (KDA-37) attach more handlers onto this same controller later.
  */
-export {};
+import { type MoveAction } from './state.ts';
+
+const REPEAT_DELAY = 280; // ms held before auto-repeat begins
+const REPEAT_RATE = 45; // ms between repeats once it kicks in
+
+export interface InputHandlers {
+  move(action: MoveAction): void;
+}
+
+/** Resolve a keydown into a movement action, honoring Cmd/Alt chords. */
+function movementFor(e: KeyboardEvent): MoveAction | null {
+  switch (e.key) {
+    case 'ArrowLeft':
+      return e.metaKey ? 'line-start' : e.altKey ? 'word-left' : 'char-left';
+    case 'ArrowRight':
+      return e.metaKey ? 'line-end' : e.altKey ? 'word-right' : 'char-right';
+    case 'ArrowUp':
+      return e.metaKey ? 'doc-start' : 'line-up';
+    case 'ArrowDown':
+      return e.metaKey ? 'doc-end' : 'line-down';
+    default:
+      return null;
+  }
+}
+
+/**
+ * Fires an action once on press, then repeats while the key is held. Tracks a
+ * single active physical key (e.code); a new movement key overrides the old.
+ */
+class Repeater {
+  private activeKey: string | null = null;
+  private delayId = 0;
+  private rateId = 0;
+
+  start(key: string, fire: () => void): void {
+    if (this.activeKey === key) return; // already repeating this key
+    this.stop();
+    this.activeKey = key;
+    fire();
+    this.delayId = window.setTimeout(() => {
+      this.rateId = window.setInterval(fire, REPEAT_RATE);
+    }, REPEAT_DELAY);
+  }
+
+  release(key: string): void {
+    if (this.activeKey === key) this.stop();
+  }
+
+  stop(): void {
+    window.clearTimeout(this.delayId);
+    window.clearInterval(this.rateId);
+    this.activeKey = null;
+  }
+}
+
+/** Wire input handlers to the window. Returns a teardown function. */
+export function attachInput(handlers: InputHandlers, target: Window = window): () => void {
+  const repeater = new Repeater();
+
+  const onKeyDown = (e: KeyboardEvent) => {
+    const action = movementFor(e);
+    if (!action) return;
+    e.preventDefault(); // arrows would otherwise scroll the page
+    repeater.start(e.code, () => handlers.move(action));
+  };
+
+  const onKeyUp = (e: KeyboardEvent) => repeater.release(e.code);
+  const onBlur = () => repeater.stop();
+
+  target.addEventListener('keydown', onKeyDown);
+  target.addEventListener('keyup', onKeyUp);
+  target.addEventListener('blur', onBlur);
+
+  return () => {
+    target.removeEventListener('keydown', onKeyDown);
+    target.removeEventListener('keyup', onKeyUp);
+    target.removeEventListener('blur', onBlur);
+    repeater.stop();
+  };
+}

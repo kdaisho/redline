@@ -1,5 +1,6 @@
 import { render, type Scene } from './render.ts';
-import { type FieldState } from './state.ts';
+import { type FieldState, type MoveAction, moveCaret } from './state.ts';
+import { attachInput } from './input.ts';
 import { loadStage } from './stages.ts';
 
 const MAX_STRIKES = 2; // spec §3
@@ -23,6 +24,8 @@ export class Game {
   private score = 0;
   private stageIndex = 0; // 0-based
   private strikes = 0;
+  private goalCol = 0; // sticky column for vertical movement
+  private detachInput: (() => void) | null = null;
 
   constructor(ctx: CanvasRenderingContext2D, width: number, height: number) {
     this.ctx = ctx;
@@ -32,6 +35,7 @@ export class Game {
   }
 
   start(): void {
+    this.detachInput = attachInput({ move: (a) => this.onMove(a) });
     this.startTime = performance.now();
     const loop = (now: number) => {
       this.elapsedMs = now - this.startTime;
@@ -44,6 +48,15 @@ export class Game {
 
   stop(): void {
     cancelAnimationFrame(this.rafId);
+    this.detachInput?.();
+    this.detachInput = null;
+  }
+
+  private onMove(action: MoveAction): void {
+    const next = moveCaret(this.field, this.field.caret, this.goalCol, action);
+    this.field.caret = next.caret;
+    this.goalCol = next.goalCol;
+    this.field.select = null; // plain movement collapses any selection
   }
 
   private update(): void {
