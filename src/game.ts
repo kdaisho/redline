@@ -1,4 +1,4 @@
-import { render, type Scene } from './render.ts';
+import { render, type Scene, type Flash } from './render.ts';
 import {
   type FieldState,
   type MoveAction,
@@ -16,6 +16,7 @@ import { attachInput, type DeleteAction } from './input.ts';
 import { loadStage } from './stages.ts';
 
 const MAX_STRIKES = 2; // spec §3
+const FLASH_LIFETIME_MS = 220; // prune snap-out flashes after they finish drawing
 
 // ── Timer (spec §5) ─────────────────────────────────────────────────────────
 /**
@@ -131,6 +132,12 @@ export class Game {
   private phase: 'playing' | 'over' = 'playing';
   private detachInput: (() => void) | null = null;
 
+  // ── transient visual effects (KDA-42), timed on the animation clock ──
+  private flashes: Flash[] = [];
+  private lastInputMs = 0;
+  private comboPulseMs = -Infinity;
+  private strikeFlashMs = -Infinity;
+
   constructor(ctx: CanvasRenderingContext2D, width: number, height: number) {
     this.ctx = ctx;
     this.width = width;
@@ -144,12 +151,13 @@ export class Game {
       select: (a) => this.onSelect(a),
       delete: (a) => this.onDelete(a),
     });
-    this.clock.start(performance.now());
+    this.lastInputMs = performance.now();
+    this.clock.start(this.lastInputMs);
     const loop = (now: number) => {
       // Clock freezes itself at game over — the final time is the metric (§5).
       this.elapsedMs = this.clock.elapsed(now);
-      this.update();
-      render(this.ctx, this.width, this.height, this.scene());
+      this.update(now);
+      render(this.ctx, this.width, this.height, this.scene(), now);
       this.rafId = requestAnimationFrame(loop);
     };
     this.rafId = requestAnimationFrame(loop);
@@ -161,12 +169,17 @@ export class Game {
     this.detachInput = null;
   }
 
+  private markInput(): void {
+    this.lastInputMs = performance.now(); // keeps the caret solid while active
+  }
+
   private onMove(action: MoveAction): void {
     if (this.phase !== 'playing') return;
     const next = moveCaret(this.field, this.field.caret, this.goalCol, action);
     this.field.caret = next.caret;
     this.goalCol = next.goalCol;
     this.field.select = null; // plain movement collapses any selection
+    this.markInput();
   }
 
   private onSelect(action: MoveAction): void {
@@ -179,6 +192,7 @@ export class Game {
     const head = moved.caret;
     // Collapsing back onto the anchor clears the selection.
     this.field.select = posEqual(anchor, head) ? null : { anchor, head };
+    this.markInput();
   }
 
   private onDelete(action: DeleteAction): void {
@@ -196,9 +210,18 @@ export class Game {
         break;
     }
     this.goalCol = this.field.caret.col;
+    this.markInput();
+
+    // Snap-out flash for each cleared block (at its pre-collapse position).
+    const now = performance.now();
+    for (const cell of result.cells) {
+      this.flashes.push({ line: cell.line, col: cell.col, color: cell.color, startMs: now });
+    }
 
     // Score the delete (combo reset on mistake/timeout handled inside).
+    const prevLevel = this.scoreState.comboLevel;
     this.scoreState = applyScore(this.scoreState, result, this.elapsedMs);
+    if (this.scoreState.comboLevel > prevLevel) this.comboPulseMs = now; // pulse on build
     if (isMistake(result)) this.registerMistake();
 
     // Game over wins over advancing (a delete can clear the last red AND be a
@@ -218,14 +241,18 @@ export class Game {
   /** A blue-touching delete = one strike; two strikes ends the run (spec §3). */
   private registerMistake(): void {
     this.strikes++;
+    this.strikeFlashMs = performance.now(); // red flash
     if (this.strikes >= MAX_STRIKES) {
       this.phase = 'over';
       this.clock.freeze(performance.now()); // capture the final time precisely
     }
   }
 
-  private update(): void {
-    // Input application, scoring, strikes, and stage progression land here.
+  private update(now: number): void {
+    // Drop finished snap-out flashes so the list can't grow unbounded.
+    if (this.flashes.length > 0) {
+      this.flashes = this.flashes.filter((f) => now - f.startMs < FLASH_LIFETIME_MS);
+    }
   }
 
   private scene(): Scene {
@@ -238,6 +265,13 @@ export class Game {
         stage: this.stageIndex + 1,
         strikes: this.strikes,
         maxStrikes: MAX_STRIKES,
+      },
+      fx: {
+        flashes: this.flashes,
+        comboLevel: this.scoreState.comboLevel,
+        comboPulseMs: this.comboPulseMs,
+        strikeFlashMs: this.strikeFlashMs,
+        lastInputMs: this.lastInputMs,
       },
     };
   }

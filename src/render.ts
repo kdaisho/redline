@@ -9,6 +9,7 @@
 import {
   type FieldState,
   type Selection,
+  type Color,
   BW,
   LH,
   normalizeSelection,
@@ -36,6 +37,32 @@ const HUD_H = 44; // HUD band height above the frame
 const FIELD_PAD = 16; // inset from frame edge to first block
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace';
 
+// effect timings (ms)
+const FLASH_MS = 180; // cleared-block snap-out
+const CARET_SOLID_MS = 500; // caret stays solid this long after input
+const CARET_BLINK_MS = 260; // then blinks with this half-period
+const COMBO_PULSE_MS = 260;
+const STRIKE_FLASH_MS = 320;
+
+/** One cleared block snapping out, spawned by a delete (KDA-42). */
+export interface Flash {
+  line: number;
+  col: number;
+  color: Color;
+  startMs: number;
+}
+
+/** Transient visual state, timed against the animation clock (not the frozen game clock). */
+export interface Fx {
+  flashes: Flash[];
+  comboLevel: number; // 0 hides the combo readout; else shows ×2^level
+  comboPulseMs: number; // when the combo last incremented
+  strikeFlashMs: number; // when the last strike landed
+  lastInputMs: number; // when the caret last moved (drives blink)
+}
+
+const clamp01 = (n: number) => (n < 0 ? 0 : n > 1 ? 1 : n);
+
 /** Top-of-HUD model fed each frame (spec §1 HUD). */
 export interface HudModel {
   score: number;
@@ -48,6 +75,7 @@ export interface HudModel {
 export interface Scene {
   field: FieldState;
   hud: HudModel;
+  fx: Fx;
   gameOver: boolean;
 }
 
@@ -74,19 +102,62 @@ export function render(
   width: number,
   height: number,
   scene: Scene,
+  nowMs: number,
 ): void {
   ctx.fillStyle = COLORS.bg;
   ctx.fillRect(0, 0, width, height);
 
-  drawHud(ctx, width, scene.hud);
+  drawHud(ctx, width, scene.hud, scene.fx, nowMs);
   drawFrame(ctx, width, height);
 
   const geom = fieldOrigin();
   if (scene.field.select) drawSelection(ctx, scene.field, scene.field.select, geom);
   drawBlocks(ctx, scene.field, geom);
-  drawCaret(ctx, scene.field, geom);
+  drawFlashes(ctx, scene.fx, geom, nowMs);
+  drawCaret(ctx, scene.field, scene.fx, nowMs, geom);
 
+  drawStrikeFlash(ctx, width, height, scene.fx, nowMs);
   if (scene.gameOver) drawGameOver(ctx, width, height);
+}
+
+/** Cleared blocks expand and fade out with a bright core — the satisfying snap. */
+function drawFlashes(ctx: CanvasRenderingContext2D, fx: Fx, geom: FieldGeom, nowMs: number): void {
+  for (const f of fx.flashes) {
+    const p = (nowMs - f.startMs) / FLASH_MS;
+    if (p < 0 || p >= 1) continue;
+    const bw = BW - 2;
+    const bh = LH - 6;
+    const cx = geom.ox + f.col * BW + 1 + bw / 2;
+    const cy = geom.oy + f.line * LH + 2 + bh / 2;
+    const scale = 1 + 0.8 * p;
+    const w = bw * scale;
+    const h = bh * scale;
+
+    ctx.globalAlpha = 1 - p;
+    ctx.fillStyle = f.color === 'red' ? COLORS.red : COLORS.blue;
+    ctx.fillRect(cx - w / 2, cy - h / 2, w, h);
+
+    ctx.globalAlpha = (1 - p) * 0.7;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(cx - w / 4, cy - h / 4, w / 2, h / 2);
+  }
+  ctx.globalAlpha = 1;
+}
+
+/** Red full-frame flash on a strike, decaying quickly. */
+function drawStrikeFlash(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  fx: Fx,
+  nowMs: number,
+): void {
+  const p = (nowMs - fx.strikeFlashMs) / STRIKE_FLASH_MS;
+  if (p < 0 || p >= 1) return;
+  ctx.globalAlpha = (1 - p) * 0.45;
+  ctx.fillStyle = COLORS.red;
+  ctx.fillRect(0, 0, width, height);
+  ctx.globalAlpha = 1;
 }
 
 /** Minimal game-over overlay; the full screen (best score, restart) is KDA-44. */
@@ -110,7 +181,13 @@ function drawGameOver(ctx: CanvasRenderingContext2D, width: number, height: numb
 }
 
 // ── HUD ──────────────────────────────────────────────────────────────────
-function drawHud(ctx: CanvasRenderingContext2D, width: number, hud: HudModel): void {
+function drawHud(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  hud: HudModel,
+  fx: Fx,
+  nowMs: number,
+): void {
   const y = FRAME_PAD + 8;
   ctx.textBaseline = 'top';
 
@@ -141,6 +218,19 @@ function drawHud(ctx: CanvasRenderingContext2D, width: number, hud: HudModel): v
   ctx.fillStyle = COLORS.text;
   ctx.font = `18px ${MONO}`;
   ctx.fillText(String(hud.stage), x, y + 14);
+
+  // COMBO (only while a combo is alive) — pulses bigger right after a clean delete
+  if (fx.comboLevel >= 1) {
+    const cxp = FRAME_PAD + 250;
+    ctx.fillStyle = COLORS.hudDim;
+    ctx.font = `11px ${MONO}`;
+    ctx.fillText('COMBO', cxp, y);
+    const pulse = clamp01((nowMs - fx.comboPulseMs) / COMBO_PULSE_MS);
+    const size = 18 + (1 - pulse) * 9; // swell on increment, settle to 18
+    ctx.fillStyle = COLORS.text;
+    ctx.font = `bold ${size}px ${MONO}`;
+    ctx.fillText(`×${2 ** fx.comboLevel}`, cxp, y + 14 - (size - 18) / 2);
+  }
 
   // TIME (right-aligned)
   const timeStr = formatTime(hud.timeMs);
@@ -203,11 +293,22 @@ function drawBlocks(ctx: CanvasRenderingContext2D, field: FieldState, geom: Fiel
   }
 }
 
-function drawCaret(ctx: CanvasRenderingContext2D, field: FieldState, geom: FieldGeom): void {
+function drawCaret(
+  ctx: CanvasRenderingContext2D,
+  field: FieldState,
+  fx: Fx,
+  nowMs: number,
+  geom: FieldGeom,
+): void {
+  // Solid right after input, then blink — feels responsive while moving.
+  const t = nowMs - fx.lastInputMs;
+  const visible = t < CARET_SOLID_MS || Math.floor((t - CARET_SOLID_MS) / CARET_BLINK_MS) % 2 === 0;
+  if (!visible) return;
+
   const { line, col } = field.caret;
   const x = geom.ox + col * BW;
   const y = geom.oy + line * LH;
-  // sharp grey bar, one line tall (blink lands in KDA-42)
+  // sharp grey bar, one line tall
   ctx.fillStyle = COLORS.caret;
   ctx.fillRect(x - 1, y, 2, LH - 2);
 }

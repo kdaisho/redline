@@ -274,31 +274,53 @@ export function moveCaret(
 /** Which chord drove a delete — feeds the big-chord scoring multiplier (KDA-39). */
 export type Chord = 'char' | 'word' | 'line' | 'selection';
 
+/** A removed colored block at its pre-collapse grid position (for snap-out juice). */
+export interface RemovedCell {
+  line: number;
+  col: number;
+  color: Color;
+}
+
 /** What a delete removed; `red`/`blue` feed scoring (KDA-39) and mistakes (KDA-38). */
 export interface DeleteResult {
   red: number;
   blue: number;
   chord: Chord;
+  /** Colored cells removed, at their original positions — drives delete feedback (KDA-42). */
+  cells: RemovedCell[];
 }
 
-function countRange(lines: Line[], start: Pos, end: Pos): { red: number; blue: number } {
+function collectRemoved(
+  lines: Line[],
+  start: Pos,
+  end: Pos,
+): { red: number; blue: number; cells: RemovedCell[] } {
   let red = 0;
   let blue = 0;
-  const tally = (b: Block) => {
-    if (b.color === 'red') red++;
-    else if (b.color === 'blue') blue++;
+  const cells: RemovedCell[] = [];
+  const tally = (line: number, col: number, b: Block) => {
+    if (b.color === 'red') {
+      red++;
+      cells.push({ line, col, color: 'red' });
+    } else if (b.color === 'blue') {
+      blue++;
+      cells.push({ line, col, color: 'blue' });
+    }
   };
   if (start.line === end.line) {
     const ln = lines[start.line];
-    for (let c = start.col; c < end.col; c++) tally(ln[c]);
+    for (let c = start.col; c < end.col; c++) tally(start.line, c, ln[c]);
   } else {
     const first = lines[start.line];
-    for (let c = start.col; c < first.length; c++) tally(first[c]);
-    for (let l = start.line + 1; l < end.line; l++) for (const b of lines[l]) tally(b);
+    for (let c = start.col; c < first.length; c++) tally(start.line, c, first[c]);
+    for (let l = start.line + 1; l < end.line; l++) {
+      const mid = lines[l];
+      for (let c = 0; c < mid.length; c++) tally(l, c, mid[c]);
+    }
     const lastLn = lines[end.line];
-    for (let c = 0; c < end.col; c++) tally(lastLn[c]);
+    for (let c = 0; c < end.col; c++) tally(end.line, c, lastLn[c]);
   }
-  return { red, blue };
+  return { red, blue, cells };
 }
 
 /**
@@ -313,7 +335,7 @@ export function deleteRange(
   end: Pos,
   chord: Chord,
 ): DeleteResult {
-  const { red, blue } = countRange(state.lines, start, end);
+  const { red, blue, cells } = collectRemoved(state.lines, start, end);
 
   const head = state.lines[start.line].slice(0, start.col);
   const tail = state.lines[end.line].slice(end.col);
@@ -337,11 +359,11 @@ export function deleteRange(
   state.lines = newLines;
   state.caret = caret;
   state.select = null;
-  return { red, blue, chord };
+  return { red, blue, chord, cells };
 }
 
 function noop(chord: Chord): DeleteResult {
-  return { red: 0, blue: 0, chord };
+  return { red: 0, blue: 0, chord, cells: [] };
 }
 
 /**
