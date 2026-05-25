@@ -9,6 +9,7 @@ import {
   deleteWordLeft,
   deleteToLineStart,
   isMistake,
+  redsRemaining,
 } from './state.ts';
 import { attachInput, type DeleteAction } from './input.ts';
 import { loadStage } from './stages.ts';
@@ -185,6 +186,19 @@ export class Game {
     // Score the delete (combo reset on mistake/timeout handled inside).
     this.scoreState = applyScore(this.scoreState, result, this.elapsedMs);
     if (isMistake(result)) this.registerMistake();
+
+    // Game over wins over advancing (a delete can clear the last red AND be a
+    // second-strike mistake at once).
+    if (this.phase !== 'playing') return;
+    if (redsRemaining(this.field) === 0) this.advanceStage();
+  }
+
+  /** Cleared every red → next (denser/taller) stage; score/strikes/time carry. */
+  private advanceStage(): void {
+    this.stageIndex++;
+    this.field = loadStage(this.stageIndex);
+    this.goalCol = 0;
+    // Combo carries across the boundary; its 1.5s window applies as usual.
   }
 
   /** A blue-touching delete = one strike; two strikes ends the run (spec §3). */
