@@ -15,26 +15,32 @@ import {
   normalizeSelection,
 } from './state.ts';
 
-/** Terminal palette — refined further in the visual theme pass (KDA-43). */
+/** Terminal palette (spec §7): pastel red/blue bars on a stark editor pane. */
 export const COLORS = {
-  bg: '#0a0c10',
-  frame: '#2a3340',
-  hudDim: '#5b6b80',
-  text: '#c8d2e0',
+  bg: '#070a0e', // stark terminal backdrop, around the frame
+  panel: '#0c1018', // the editor pane interior
+  frame: '#3a485e', // hard frame stroke
+  hudRule: '#1a2230', // thin separator under the HUD band
+  hudDim: '#5d6b80', // HUD labels
+  text: '#d4dceb', // HUD values / bright text
+  gutter: '#46566e', // line-number column
+  currentLine: 'rgba(255,255,255,0.04)', // caret-row highlight
   red: '#f5a0a0',
-  redStroke: '#c66',
+  redStroke: '#cf8181',
   blue: '#7fb8f0',
-  blueStroke: '#5a87bd',
-  caret: '#9aa6b6',
-  selection: 'rgba(154,166,182,0.22)',
+  blueStroke: '#5e8fc4',
+  caret: '#b2bdcd',
+  selection: 'rgba(150,180,235,0.20)',
   strikeOn: '#f5a0a0',
-  strikeOff: '#34404f',
+  strikeOff: '#2d3748',
 } as const;
 
 // ── layout ───────────────────────────────────────────────────────────────
 const FRAME_PAD = 24; // margin from canvas edge to editor frame
 const HUD_H = 44; // HUD band height above the frame
-const FIELD_PAD = 16; // inset from frame edge to first block
+const FIELD_PAD = 14; // inset from pane top to first block
+const GUTTER_W = 42; // line-number column width
+const GUTTER_GAP = 10; // gap between gutter and first block
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace';
 
 // effect timings (ms)
@@ -84,8 +90,23 @@ interface FieldGeom {
   oy: number;
 }
 
+interface FrameRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+function frameRect(width: number, height: number): FrameRect {
+  const y = FRAME_PAD + HUD_H;
+  return { x: FRAME_PAD, y, w: width - FRAME_PAD * 2, h: height - FRAME_PAD - y };
+}
+
 function fieldOrigin(): FieldGeom {
-  return { ox: FRAME_PAD + FIELD_PAD, oy: FRAME_PAD + HUD_H + FIELD_PAD };
+  return {
+    ox: FRAME_PAD + GUTTER_W + GUTTER_GAP, // text starts after the line-number gutter
+    oy: FRAME_PAD + HUD_H + FIELD_PAD,
+  };
 }
 
 function formatTime(ms: number): string {
@@ -104,13 +125,21 @@ export function render(
   scene: Scene,
   nowMs: number,
 ): void {
+  const frame = frameRect(width, height);
+  const geom = fieldOrigin();
+
   ctx.fillStyle = COLORS.bg;
   ctx.fillRect(0, 0, width, height);
 
   drawHud(ctx, width, scene.hud, scene.fx, nowMs);
-  drawFrame(ctx, width, height);
 
-  const geom = fieldOrigin();
+  // editor pane: filled interior, current-line band, then the hard frame stroke
+  ctx.fillStyle = COLORS.panel;
+  ctx.fillRect(frame.x, frame.y, frame.w, frame.h);
+  drawCurrentLine(ctx, scene.field, geom, frame);
+  drawGutter(ctx, scene.field, geom, frame);
+  drawFrame(ctx, frame);
+
   if (scene.field.select) drawSelection(ctx, scene.field, scene.field.select, geom);
   drawBlocks(ctx, scene.field, geom);
   drawFlashes(ctx, scene.fx, geom, nowMs);
@@ -118,6 +147,47 @@ export function render(
 
   drawStrikeFlash(ctx, width, height, scene.fx, nowMs);
   if (scene.gameOver) drawGameOver(ctx, width, height);
+}
+
+/** Faint full-width band behind the caret's row — classic editor current-line. */
+function drawCurrentLine(
+  ctx: CanvasRenderingContext2D,
+  field: FieldState,
+  geom: FieldGeom,
+  frame: FrameRect,
+): void {
+  if (field.lines.length === 0) return;
+  const y = geom.oy + field.caret.line * LH;
+  ctx.fillStyle = COLORS.currentLine;
+  ctx.fillRect(frame.x + 1, y - 1, frame.w - 2, LH);
+}
+
+/** Right-aligned line numbers in a dim gutter — sells the code-editor look. */
+function drawGutter(
+  ctx: CanvasRenderingContext2D,
+  field: FieldState,
+  geom: FieldGeom,
+  frame: FrameRect,
+): void {
+  const gutterRight = FRAME_PAD + GUTTER_W;
+  // hairline divider between gutter and text
+  ctx.strokeStyle = COLORS.hudRule;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(gutterRight + 0.5, frame.y + 1);
+  ctx.lineTo(gutterRight + 0.5, frame.y + frame.h - 1);
+  ctx.stroke();
+
+  ctx.fillStyle = COLORS.gutter;
+  ctx.font = `12px ${MONO}`;
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (let r = 0; r < field.lines.length; r++) {
+    const y = geom.oy + r * LH + (LH - 6) / 2 + 2;
+    ctx.fillText(String(r + 1), gutterRight - 6, y);
+  }
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
 }
 
 /** Cleared blocks expand and fade out with a bright core — the satisfying snap. */
@@ -162,7 +232,7 @@ function drawStrikeFlash(
 
 /** Minimal game-over overlay; the full screen (best score, restart) is KDA-44. */
 function drawGameOver(ctx: CanvasRenderingContext2D, width: number, height: number): void {
-  ctx.fillStyle = 'rgba(10,12,16,0.78)';
+  ctx.fillStyle = 'rgba(7,10,14,0.82)';
   ctx.fillRect(0, 0, width, height);
 
   ctx.textAlign = 'center';
@@ -190,6 +260,15 @@ function drawHud(
 ): void {
   const y = FRAME_PAD + 8;
   ctx.textBaseline = 'top';
+
+  // thin separator rule along the bottom of the HUD band
+  ctx.strokeStyle = COLORS.hudRule;
+  ctx.lineWidth = 1;
+  const ruleY = FRAME_PAD + HUD_H - 6;
+  ctx.beginPath();
+  ctx.moveTo(FRAME_PAD, ruleY + 0.5);
+  ctx.lineTo(width - FRAME_PAD, ruleY + 0.5);
+  ctx.stroke();
 
   // labels in dim, values in bright — monospace throughout
   const label = (s: string) => {
@@ -262,16 +341,11 @@ function drawHud(
 }
 
 // ── editor frame ───────────────────────────────────────────────────────────
-function drawFrame(ctx: CanvasRenderingContext2D, width: number, height: number): void {
-  const x = FRAME_PAD;
-  const yTop = FRAME_PAD + HUD_H;
-  const w = width - FRAME_PAD * 2;
-  const h = height - FRAME_PAD - yTop;
-
+function drawFrame(ctx: CanvasRenderingContext2D, frame: FrameRect): void {
   ctx.strokeStyle = COLORS.frame;
   ctx.lineWidth = 2;
   // +0.5 keeps the 2px stroke crisp on the pixel grid (no rounding ever)
-  ctx.strokeRect(x + 0.5, yTop + 0.5, w - 1, h - 1);
+  ctx.strokeRect(frame.x + 0.5, frame.y + 0.5, frame.w - 1, frame.h - 1);
 }
 
 // ── field ────────────────────────────────────────────────────────────────
