@@ -9,8 +9,17 @@ import { type MoveAction } from './state.ts';
 const REPEAT_DELAY = 280; // ms held before auto-repeat begins
 const REPEAT_RATE = 45; // ms between repeats once it kicks in
 
-/** Which delete chord was pressed (spec §2). */
-export type DeleteAction = 'backward' | 'word-left' | 'to-line-start';
+/**
+ * Which delete chord was pressed. Backward = Backspace family (spec §2);
+ * forward = macOS fn+Delete family (KDA-51), mirrored rightward.
+ */
+export type DeleteAction =
+  | 'backward'
+  | 'word-left'
+  | 'to-line-start'
+  | 'forward'
+  | 'word-right'
+  | 'to-line-end';
 
 export interface InputHandlers {
   move(action: MoveAction): void;
@@ -19,6 +28,8 @@ export interface InputHandlers {
   delete(action: DeleteAction): void;
   /** Enter/Space — start or restart a run (start & game-over screens). */
   confirm(): void;
+  /** M — toggle mute (KDA-46). */
+  mute(): void;
 }
 
 /** Resolve a keydown into a movement action, honoring Cmd/Alt chords. */
@@ -83,6 +94,21 @@ export function attachInput(handlers: InputHandlers, target: Window = window): (
       if (e.repeat) return; // deletion is one action per keypress — no hold-to-repeat
       const action: DeleteAction = e.metaKey ? 'to-line-start' : e.altKey ? 'word-left' : 'backward';
       handlers.delete(action);
+      return;
+    }
+
+    // Forward-delete (fn+Delete, or the dedicated Delete key) — mirrors Backspace.
+    if (e.key === 'Delete') {
+      e.preventDefault();
+      if (e.repeat) return;
+      const action: DeleteAction = e.metaKey ? 'to-line-end' : e.altKey ? 'word-right' : 'forward';
+      handlers.delete(action);
+      return;
+    }
+
+    if ((e.key === 'm' || e.key === 'M') && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      if (!e.repeat) handlers.mute();
       return;
     }
 
