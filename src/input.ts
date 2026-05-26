@@ -30,6 +30,13 @@ export interface InputHandlers {
   confirm(): void;
   /** M — toggle mute (KDA-46). */
   mute(): void;
+  /**
+   * Whether gameplay input (movement/selection/deletion) is currently accepted.
+   * False during the countdown, stage-clear, start, and game-over screens —
+   * gating here (not just in the handlers) stops held keys from arming the
+   * auto-repeat and leaking into the board the instant play begins.
+   */
+  isActive(): boolean;
 }
 
 /** Resolve a keydown into a movement action, honoring Cmd/Alt chords. */
@@ -91,7 +98,7 @@ export function attachInput(handlers: InputHandlers, target: Window = window): (
 
     if (e.key === 'Backspace') {
       e.preventDefault(); // also stops the browser's back-navigation
-      if (e.repeat) return; // deletion is one action per keypress — no hold-to-repeat
+      if (e.repeat || !handlers.isActive()) return; // one action per press; only while playing
       const action: DeleteAction = e.metaKey ? 'to-line-start' : e.altKey ? 'word-left' : 'backward';
       handlers.delete(action);
       return;
@@ -100,7 +107,7 @@ export function attachInput(handlers: InputHandlers, target: Window = window): (
     // Forward-delete (fn+Delete, or the dedicated Delete key) — mirrors Backspace.
     if (e.key === 'Delete') {
       e.preventDefault();
-      if (e.repeat) return;
+      if (e.repeat || !handlers.isActive()) return;
       const action: DeleteAction = e.metaKey ? 'to-line-end' : e.altKey ? 'word-right' : 'forward';
       handlers.delete(action);
       return;
@@ -115,6 +122,12 @@ export function attachInput(handlers: InputHandlers, target: Window = window): (
     const action = movementFor(e);
     if (!action) return;
     e.preventDefault(); // arrows would otherwise scroll the page
+    // Ignore (and disarm) movement/selection when not playing — keys pressed
+    // during the countdown must never carry a repeat into the revealed board.
+    if (!handlers.isActive()) {
+      repeater.stop();
+      return;
+    }
     // Same chords; Shift extends the selection instead of moving (both repeat).
     const fire = e.shiftKey
       ? () => handlers.select(action)

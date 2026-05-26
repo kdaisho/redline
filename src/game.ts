@@ -225,6 +225,7 @@ export class Game {
       delete: (a) => this.onDelete(a),
       confirm: () => this.onConfirm(),
       mute: () => this.onMute(),
+      isActive: () => this.phase === 'playing',
     });
     this.best = loadBest();
     this.muted = loadMuted();
