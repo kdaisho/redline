@@ -88,6 +88,11 @@ class Repeater {
 /** Wire input handlers to the window. Returns a teardown function. */
 export function attachInput(handlers: InputHandlers, target: Window = window): () => void {
   const repeater = new Repeater();
+  // Movement keys seen while input is inactive (countdown / clear / over) — incl.
+  // a key held down from a prior stage, whose OS key-repeat keeps arriving. They
+  // stay neutralized until physically released, so a held key can't fire the
+  // instant play begins (which otherwise selects/moves row 0 on stage start).
+  const heldOver = new Set<string>();
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === ' ') {
@@ -122,12 +127,15 @@ export function attachInput(handlers: InputHandlers, target: Window = window): (
     const action = movementFor(e);
     if (!action) return;
     e.preventDefault(); // arrows would otherwise scroll the page
-    // Ignore (and disarm) movement/selection when not playing — keys pressed
-    // during the countdown must never carry a repeat into the revealed board.
+    // Not playing: remember the key as held-over and disarm any repeat. A key
+    // pressed/held during the countdown must never carry into the revealed board.
     if (!handlers.isActive()) {
+      heldOver.add(e.code);
       repeater.stop();
       return;
     }
+    // A key still down from before play began: wait for a real release+press.
+    if (heldOver.has(e.code)) return;
     // Same chords; Shift extends the selection instead of moving (both repeat).
     const fire = e.shiftKey
       ? () => handlers.select(action)
@@ -135,7 +143,10 @@ export function attachInput(handlers: InputHandlers, target: Window = window): (
     repeater.start(e.code, fire);
   };
 
-  const onKeyUp = (e: KeyboardEvent) => repeater.release(e.code);
+  const onKeyUp = (e: KeyboardEvent) => {
+    heldOver.delete(e.code); // released → a fresh press is honored again
+    repeater.release(e.code);
+  };
   const onBlur = () => repeater.stop();
 
   target.addEventListener('keydown', onKeyDown);

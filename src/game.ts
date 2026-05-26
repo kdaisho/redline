@@ -286,6 +286,7 @@ export class Game {
   /** Countdown elapsed: reveal the board, flash "GO", and let the clock run. */
   private finishCountdown(): void {
     this.phase = 'playing';
+    this.field.select = null; // a stage always begins with nothing selected
     const now = performance.now();
     this.lastInputMs = now;
     this.goFlashMs = now;
