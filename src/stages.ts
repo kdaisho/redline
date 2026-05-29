@@ -50,20 +50,30 @@ const AUTHORED: Stage[] = [
 /** How many stages are hand-authored before generation takes over. */
 export const AUTHORED_COUNT = AUTHORED.length;
 
-/** Build a fresh, independent field for stage `index` (0-based). */
-export function loadStage(index: number): FieldState {
-  const board = index < AUTHORED.length ? cloneStage(AUTHORED[index]) : generateStage(index);
+/**
+ * Build a fresh, independent field for stage `index` (0-based).
+ *
+ * Hand-authored stages (1–3) are fixed — the deliberate intro ramp. Generated
+ * stages mix in a per-run `runSeed` so the board differs each playthrough while
+ * the difficulty curve (a function of `index`) stays ordered. A `runSeed` of 0
+ * reproduces the legacy deterministic-per-index boards.
+ */
+export function loadStage(index: number, runSeed = 0): FieldState {
+  const board = index < AUTHORED.length ? cloneStage(AUTHORED[index]) : generateStage(index, runSeed);
   return createField(board);
 }
 
 // ── generation ───────────────────────────────────────────────────────────
 /**
  * Procedurally build stage `index`. As difficulty rises: more rows, a bigger
- * per-line column budget (denser), wider reds, and more frequent blue traps.
- * The first word of every line is red so there's always a clear path.
+ * per-line column budget (denser), wider reds, and more frequent blue traps —
+ * all functions of `index`, so later stages stay harder. The `runSeed` only
+ * perturbs the RNG stream, varying the board between runs without touching the
+ * difficulty curve. The first word of every line is red so there's always a
+ * clear path.
  */
-function generateStage(index: number): Stage {
-  const rand = mulberry32((index + 1) * 0x9e3779b1);
+function generateStage(index: number, runSeed: number): Stage {
+  const rand = mulberry32(((index + 1) * 0x9e3779b1) ^ Math.imul(runSeed | 0, 0x85ebca6b));
   const d = index;
 
   const rows = clamp(4 + Math.floor(d * 0.7), 4, 14);

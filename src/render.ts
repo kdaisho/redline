@@ -51,6 +51,8 @@ const CARET_SOLID_MS = 500; // caret stays solid this long after input
 const CARET_BLINK_MS = 260; // then blinks with this half-period
 const COMBO_PULSE_MS = 260;
 const STRIKE_FLASH_MS = 320;
+const CLEARED_BACKDROP_DELAY_MS = 700; // hold on the board before the text (KDA-48)
+const GO_FLASH_MS = 420; // "GO" pop after the countdown (KDA-49)
 
 /** One cleared block snapping out, spawned by a delete (KDA-42). */
 export interface Flash {
@@ -68,6 +70,7 @@ export interface Fx {
   strikeFlashMs: number; // when the last strike landed
   clearedFlashMs: number; // when the current stage was cleared
   lastInputMs: number; // when the caret last moved (drives blink)
+  goFlashMs: number; // when the countdown ended → flash "GO" over the board
 }
 
 const clamp01 = (n: number) => (n < 0 ? 0 : n > 1 ? 1 : n);
@@ -79,9 +82,10 @@ export interface HudModel {
   stage: number; // 1-based for display
   strikes: number;
   maxStrikes: number;
+  muted: boolean; // audio mute state (KDA-46)
 }
 
-export type Phase = 'start' | 'playing' | 'cleared' | 'over';
+export type Phase = 'start' | 'countdown' | 'playing' | 'cleared' | 'over';
 
 export interface Scene {
   field: FieldState;
@@ -90,6 +94,7 @@ export interface Scene {
   phase: Phase;
   best: number; // best score ever (localStorage), shown on start/over screens
   isNewBest: boolean; // this run beat the stored best
+  countdownNum: number; // 3→2→1, shown while phase === 'countdown' (KDA-49)
 }
 
 interface FieldGeom {
@@ -143,21 +148,71 @@ export function render(
   // editor pane: filled interior, current-line band, then the hard frame stroke
   ctx.fillStyle = COLORS.panel;
   ctx.fillRect(frame.x, frame.y, frame.w, frame.h);
-  drawCurrentLine(ctx, scene.field, geom, frame);
-  drawGutter(ctx, scene.field, geom, frame);
+
+  // The countdown keeps the board fully hidden — only the empty editor shows.
+  const hidden = scene.phase === 'countdown';
+  if (!hidden) {
+    drawCurrentLine(ctx, scene.field, geom, frame);
+    drawGutter(ctx, scene.field, geom, frame);
+  }
   drawFrame(ctx, frame);
 
-  drawBlocks(ctx, scene.field, geom);
-  // selection drawn AFTER blocks so the highlight reads clearly over the bars
-  if (scene.field.select) drawSelection(ctx, scene.field, scene.field.select, geom);
-  drawFlashes(ctx, scene.fx, geom, nowMs);
-  drawCaret(ctx, scene.field, scene.fx, nowMs, geom);
+  if (!hidden) {
+    drawBlocks(ctx, scene.field, geom);
+    // selection drawn AFTER blocks so the highlight reads clearly over the bars
+    if (scene.field.select) drawSelection(ctx, scene.field, scene.field.select, geom);
+    drawFlashes(ctx, scene.fx, geom, nowMs);
+    drawCaret(ctx, scene.field, scene.fx, nowMs, geom);
+  }
 
   drawStrikeFlash(ctx, width, height, scene.fx, nowMs);
   drawClearedFlash(ctx, width, height, scene.fx, nowMs);
+  drawGoFlash(ctx, width, height, scene.fx, nowMs);
+
   if (scene.phase === 'start') drawStartScreen(ctx, width, height, scene.best);
-  else if (scene.phase === 'cleared') drawStageCleared(ctx, width, height, scene, nowMs);
+  else if (scene.phase === 'countdown') drawCountdown(ctx, width, height, scene.countdownNum);
+  // Hold on the cleared board briefly before the text backdrop pops in (KDA-48).
+  else if (scene.phase === 'cleared' && nowMs - scene.fx.clearedFlashMs >= CLEARED_BACKDROP_DELAY_MS)
+    drawStageCleared(ctx, width, height, scene, nowMs);
   else if (scene.phase === 'over') drawGameOver(ctx, width, height, scene);
+}
+
+/** Big centered 3-2-1 over the hidden board (KDA-49). */
+function drawCountdown(ctx: CanvasRenderingContext2D, width: number, height: number, num: number): void {
+  const cx = width / 2;
+  const cy = height / 2;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = COLORS.hudDim;
+  ctx.font = `13px ${MONO}`;
+  ctx.fillText('GET READY', cx, cy - 70);
+  ctx.fillStyle = COLORS.text;
+  ctx.font = `bold 120px ${MONO}`;
+  ctx.fillText(String(num), cx, cy + 8);
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+}
+
+/** "GO" flashes over the revealed board the instant the countdown ends. */
+function drawGoFlash(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  fx: Fx,
+  nowMs: number,
+): void {
+  const p = (nowMs - fx.goFlashMs) / GO_FLASH_MS;
+  if (p < 0 || p >= 1) return;
+  ctx.save();
+  ctx.globalAlpha = 1 - p;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = COLORS.cleared;
+  ctx.font = `bold ${72 + p * 36}px ${MONO}`; // swell out as it fades
+  ctx.fillText('GO', width / 2, height / 2);
+  ctx.restore();
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
 }
 
 /** Gentle green full-frame flash when a stage is cleared. */
@@ -304,7 +359,8 @@ function drawStartScreen(
   ctx.font = `12px ${MONO}`;
   const lines = [
     'move  ← →   ·  word  ⌥← ⌥→   ·  line  ⌘← ⌘→   ·  ↑ ↓',
-    'select  ⇧ + move        delete  ⌫   ⌥⌫ word   ⌘⌫ line',
+    'delete left  ⌫  ⌥⌫  ⌘⌫     ·     delete right  ⌦  ⌥⌦  ⌘⌦',
+    'select  ⇧ + move        ·        mute  M',
     'clear every red to advance · two mistakes ends the run',
   ];
   lines.forEach((t, i) => ctx.fillText(t, cx, height / 2 - 8 + i * 22));
@@ -465,6 +521,15 @@ function drawHud(
     ctx.font = `bold ${size}px ${MONO}`;
     ctx.fillText(`×${2 ** fx.comboLevel}`, cxp, y + 14 - (size - 18) / 2);
   }
+
+  // SOUND (mute indicator, KDA-46) — sits in the open space before STRIKES
+  const sndX = FRAME_PAD + 360;
+  ctx.fillStyle = COLORS.hudDim;
+  ctx.font = `11px ${MONO}`;
+  ctx.fillText('SOUND', sndX, y);
+  ctx.fillStyle = hud.muted ? COLORS.hudDim : COLORS.text;
+  ctx.font = `18px ${MONO}`;
+  ctx.fillText(hud.muted ? '✕ MUTED' : '♪ ON', sndX, y + 14);
 
   // TIME (right-aligned)
   const timeStr = formatTime(hud.timeMs);

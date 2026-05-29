@@ -9,8 +9,17 @@ import { type MoveAction } from './state.ts';
 const REPEAT_DELAY = 280; // ms held before auto-repeat begins
 const REPEAT_RATE = 45; // ms between repeats once it kicks in
 
-/** Which delete chord was pressed (spec §2). */
-export type DeleteAction = 'backward' | 'word-left' | 'to-line-start';
+/**
+ * Which delete chord was pressed. Backward = Backspace family (spec §2);
+ * forward = macOS fn+Delete family (KDA-51), mirrored rightward.
+ */
+export type DeleteAction =
+  | 'backward'
+  | 'word-left'
+  | 'to-line-start'
+  | 'forward'
+  | 'word-right'
+  | 'to-line-end';
 
 export interface InputHandlers {
   move(action: MoveAction): void;
@@ -19,6 +28,15 @@ export interface InputHandlers {
   delete(action: DeleteAction): void;
   /** Enter/Space — start or restart a run (start & game-over screens). */
   confirm(): void;
+  /** M — toggle mute (KDA-46). */
+  mute(): void;
+  /**
+   * Whether gameplay input (movement/selection/deletion) is currently accepted.
+   * False during the countdown, stage-clear, start, and game-over screens —
+   * gating here (not just in the handlers) stops held keys from arming the
+   * auto-repeat and leaking into the board the instant play begins.
+   */
+  isActive(): boolean;
 }
 
 /** Resolve a keydown into a movement action, honoring Cmd/Alt chords. */
@@ -70,6 +88,11 @@ class Repeater {
 /** Wire input handlers to the window. Returns a teardown function. */
 export function attachInput(handlers: InputHandlers, target: Window = window): () => void {
   const repeater = new Repeater();
+  // Movement keys seen while input is inactive (countdown / clear / over) — incl.
+  // a key held down from a prior stage, whose OS key-repeat keeps arriving. They
+  // stay neutralized until physically released, so a held key can't fire the
+  // instant play begins (which otherwise selects/moves row 0 on stage start).
+  const heldOver = new Set<string>();
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === ' ') {
@@ -80,15 +103,39 @@ export function attachInput(handlers: InputHandlers, target: Window = window): (
 
     if (e.key === 'Backspace') {
       e.preventDefault(); // also stops the browser's back-navigation
-      if (e.repeat) return; // deletion is one action per keypress — no hold-to-repeat
+      if (e.repeat || !handlers.isActive()) return; // one action per press; only while playing
       const action: DeleteAction = e.metaKey ? 'to-line-start' : e.altKey ? 'word-left' : 'backward';
       handlers.delete(action);
+      return;
+    }
+
+    // Forward-delete (fn+Delete, or the dedicated Delete key) — mirrors Backspace.
+    if (e.key === 'Delete') {
+      e.preventDefault();
+      if (e.repeat || !handlers.isActive()) return;
+      const action: DeleteAction = e.metaKey ? 'to-line-end' : e.altKey ? 'word-right' : 'forward';
+      handlers.delete(action);
+      return;
+    }
+
+    if ((e.key === 'm' || e.key === 'M') && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      if (!e.repeat) handlers.mute();
       return;
     }
 
     const action = movementFor(e);
     if (!action) return;
     e.preventDefault(); // arrows would otherwise scroll the page
+    // Not playing: remember the key as held-over and disarm any repeat. A key
+    // pressed/held during the countdown must never carry into the revealed board.
+    if (!handlers.isActive()) {
+      heldOver.add(e.code);
+      repeater.stop();
+      return;
+    }
+    // A key still down from before play began: wait for a real release+press.
+    if (heldOver.has(e.code)) return;
     // Same chords; Shift extends the selection instead of moving (both repeat).
     const fire = e.shiftKey
       ? () => handlers.select(action)
@@ -96,7 +143,10 @@ export function attachInput(handlers: InputHandlers, target: Window = window): (
     repeater.start(e.code, fire);
   };
 
-  const onKeyUp = (e: KeyboardEvent) => repeater.release(e.code);
+  const onKeyUp = (e: KeyboardEvent) => {
+    heldOver.delete(e.code); // released → a fresh press is honored again
+    repeater.release(e.code);
+  };
   const onBlur = () => repeater.stop();
 
   target.addEventListener('keydown', onKeyDown);

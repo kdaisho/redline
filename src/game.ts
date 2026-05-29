@@ -8,15 +8,24 @@ import {
   deleteBackward,
   deleteWordLeft,
   deleteToLineStart,
+  deleteForward,
+  deleteWordRight,
+  deleteToLineEnd,
   isMistake,
   redsRemaining,
   posEqual,
 } from './state.ts';
 import { attachInput, type DeleteAction } from './input.ts';
 import { loadStage } from './stages.ts';
+import { initAudio, loadMuted, toggleMute, playRedPop, playBlueError, playFanfare } from './audio.ts';
 
 const MAX_STRIKES = 2; // spec §3
 const FLASH_LIFETIME_MS = 220; // prune snap-out flashes after they finish drawing
+
+// Pre-stage 3-2-1 countdown (KDA-49): board hidden, clock/input gated until it ends.
+const COUNTDOWN_FROM = 3;
+const COUNTDOWN_STEP_MS = 650; // per number; total = FROM × STEP
+const COUNTDOWN_MS = COUNTDOWN_FROM * COUNTDOWN_STEP_MS;
 
 // ── best score persistence (spec §6) ────────────────────────────────────────
 const BEST_KEY = 'redline.best';
@@ -67,6 +76,13 @@ export class Clock {
     this.accumMs = 0;
     this.segStart = now;
     this.running = true;
+    this.frozenMs = null;
+  }
+
+  /** Stopped at zero — for the pre-run countdown so the HUD reads 00:00 (not a stale frozen time). */
+  reset(): void {
+    this.accumMs = 0;
+    this.running = false;
     this.frozenMs = null;
   }
 
@@ -176,10 +192,17 @@ export class Game {
   private stageIndex = 0; // 0-based
   private strikes = 0;
   private goalCol = 0; // sticky column for vertical movement
-  private phase: 'start' | 'playing' | 'cleared' | 'over' = 'start';
+  private phase: 'start' | 'countdown' | 'playing' | 'cleared' | 'over' = 'start';
   private best: Best = { score: 0, stage: 0, timeMs: 0 };
   private isNewBest = false;
   private detachInput: (() => void) | null = null;
+  private muted = false; // KDA-46: HUD reflection of the audio mute state
+  private runSeed = 0; // KDA-50: per-run seed mixed into stage generation
+
+  // ── pre-stage countdown (KDA-49) ──
+  private countdownStartMs = 0; // performance.now() when the countdown began
+  private countdownFresh = false; // true → start the clock on finish; false → resume
+  private goFlashMs = -Infinity; // when "GO" should flash over the revealed board
 
   // ── transient visual effects (KDA-42), timed on the animation clock ──
   private flashes: Flash[] = [];
@@ -201,8 +224,11 @@ export class Game {
       select: (a) => this.onSelect(a),
       delete: (a) => this.onDelete(a),
       confirm: () => this.onConfirm(),
+      mute: () => this.onMute(),
+      isActive: () => this.phase === 'playing',
     });
     this.best = loadBest();
+    this.muted = loadMuted();
     // The run waits on the start screen; the clock starts only on beginRun().
     const loop = (now: number) => {
       this.elapsedMs = this.clock.elapsed(now);
@@ -215,7 +241,8 @@ export class Game {
 
   /** Enter/Space: start a run, advance from a cleared stage, or restart from game over. */
   private onConfirm(): void {
-    if (this.phase === 'playing') return;
+    initAudio(); // unlock/resume the AudioContext on this user gesture (autoplay policy)
+    if (this.phase === 'playing' || this.phase === 'countdown') return;
     if (this.phase === 'cleared') {
       this.advanceStage();
       return;
@@ -223,10 +250,16 @@ export class Game {
     this.beginRun(); // from 'start' or 'over'
   }
 
-  /** Reset all run state to a fresh stage 1 and start the clock. */
+  /** M: toggle mute and mirror it for the HUD. */
+  private onMute(): void {
+    this.muted = toggleMute();
+  }
+
+  /** Reset all run state to a fresh stage 1, then run the pre-stage countdown. */
   private beginRun(): void {
+    this.runSeed = (Math.random() * 0x100000000) >>> 0; // fresh board variety each run (KDA-50)
     this.stageIndex = 0;
-    this.field = loadStage(0);
+    this.field = loadStage(0, this.runSeed);
     this.scoreState = initialScore();
     this.strikes = 0;
     this.goalCol = 0;
@@ -235,10 +268,30 @@ export class Game {
     this.strikeFlashMs = -Infinity;
     this.clearedFlashMs = -Infinity;
     this.isNewBest = false;
+    this.clock.reset(); // HUD reads 00:00 during the countdown, not last run's frozen time
+    this.enterCountdown(true);
+  }
+
+  /**
+   * Begin the 3-2-1 countdown for the current stage (KDA-49). The board is
+   * hidden and the clock is left alone until `finishCountdown` — `fresh` decides
+   * whether that's a clock start (new run) or resume (stage advance).
+   */
+  private enterCountdown(fresh: boolean): void {
+    this.phase = 'countdown';
+    this.countdownFresh = fresh;
+    this.countdownStartMs = performance.now();
+  }
+
+  /** Countdown elapsed: reveal the board, flash "GO", and let the clock run. */
+  private finishCountdown(): void {
     this.phase = 'playing';
+    this.field.select = null; // a stage always begins with nothing selected
     const now = performance.now();
     this.lastInputMs = now;
-    this.clock.start(now);
+    this.goFlashMs = now;
+    if (this.countdownFresh) this.clock.start(now);
+    else this.clock.resume(now);
   }
 
   stop(): void {
@@ -286,9 +339,23 @@ export class Game {
       case 'to-line-start':
         result = deleteToLineStart(this.field);
         break;
+      case 'forward':
+        result = deleteForward(this.field);
+        break;
+      case 'word-right':
+        result = deleteWordRight(this.field);
+        break;
+      case 'to-line-end':
+        result = deleteToLineEnd(this.field);
+        break;
     }
     this.goalCol = this.field.caret.col;
     this.markInput();
+
+    // Audio (KDA-46): a mistake (any blue) takes the negative cue; a clean red
+    // delete pops; spaces-only deletes are silent.
+    if (isMistake(result)) playBlueError();
+    else if (result.red > 0) playRedPop();
 
     // Snap-out flash for each cleared block (at its pre-collapse position).
     const now = performance.now();
@@ -313,20 +380,20 @@ export class Game {
     this.phase = 'cleared';
     const now = performance.now();
     this.clock.pause(now); // time stops while the celebration is up
-    this.clearedFlashMs = now;
+    this.clearedFlashMs = now; // also gates the backdrop delay in render (KDA-48)
+    playFanfare(); // KDA-47: short cue at the moment of clear, before the text
   }
 
   /** Advance to the next (denser/taller) stage; score/strikes/time carry forward. */
   private advanceStage(): void {
     this.stageIndex++;
-    this.field = loadStage(this.stageIndex);
+    this.field = loadStage(this.stageIndex, this.runSeed);
     this.goalCol = 0;
     this.flashes = [];
-    this.phase = 'playing';
-    const now = performance.now();
-    this.lastInputMs = now;
-    this.clock.resume(now); // resume the run clock
+    this.clearedFlashMs = -Infinity;
+    // Countdown gates the reveal; the clock resumes when it finishes.
     // Combo carries across the boundary; its window applies as usual.
+    this.enterCountdown(false);
   }
 
   /** A blue-touching delete = one strike; two strikes ends the run (spec §3). */
@@ -360,6 +427,11 @@ export class Game {
     if (this.flashes.length > 0) {
       this.flashes = this.flashes.filter((f) => now - f.startMs < FLASH_LIFETIME_MS);
     }
+
+    // Countdown over → reveal the board and let the clock run (KDA-49).
+    if (this.phase === 'countdown' && now - this.countdownStartMs >= COUNTDOWN_MS) {
+      this.finishCountdown();
+    }
   }
 
   private scene(): Scene {
@@ -368,12 +440,14 @@ export class Game {
       phase: this.phase,
       best: this.best.score,
       isNewBest: this.isNewBest,
+      countdownNum: this.countdownDigit(),
       hud: {
         score: this.scoreState.score,
         timeMs: this.elapsedMs,
         stage: this.stageIndex + 1,
         strikes: this.strikes,
         maxStrikes: MAX_STRIKES,
+        muted: this.muted,
       },
       fx: {
         flashes: this.flashes,
@@ -382,7 +456,15 @@ export class Game {
         strikeFlashMs: this.strikeFlashMs,
         clearedFlashMs: this.clearedFlashMs,
         lastInputMs: this.lastInputMs,
+        goFlashMs: this.goFlashMs,
       },
     };
+  }
+
+  /** Current countdown digit (3→2→1) for rendering; only meaningful in 'countdown'. */
+  private countdownDigit(): number {
+    const elapsed = performance.now() - this.countdownStartMs;
+    const n = COUNTDOWN_FROM - Math.floor(elapsed / COUNTDOWN_STEP_MS);
+    return n < 1 ? 1 : n > COUNTDOWN_FROM ? COUNTDOWN_FROM : n;
   }
 }

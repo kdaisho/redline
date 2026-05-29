@@ -400,6 +400,40 @@ export function deleteToLineStart(state: FieldState): DeleteResult {
   return noop('line');
 }
 
+// ── Forward deletion (macOS fn+Delete / forward-delete) — mirrors of the ──────
+// backward trio but rightward. The caret stays put (deletion is to the right);
+// each is a no-op at the line end, and rows never join (consistent with §1).
+
+/** Delete (fn+Delete): delete selection, else one block right. No-op at line end. */
+export function deleteForward(state: FieldState): DeleteResult {
+  const sel = deleteSelectionIfAny(state);
+  if (sel) return sel;
+  const { line, col } = state.caret;
+  if (col < lineLength(state, line)) return deleteRange(state, { line, col }, { line, col: col + 1 }, 'char');
+  return noop('char');
+}
+
+/** Alt+Delete: delete the word to the right. No-op at line end. */
+export function deleteWordRight(state: FieldState): DeleteResult {
+  const sel = deleteSelectionIfAny(state);
+  if (sel) return sel;
+  const { line, col } = state.caret;
+  if (col < lineLength(state, line)) {
+    return deleteRange(state, { line, col }, { line, col: wordRightCol(state.lines[line], col) }, 'word');
+  }
+  return noop('word');
+}
+
+/** Cmd+Delete: delete from caret to line end. No-op at line end. */
+export function deleteToLineEnd(state: FieldState): DeleteResult {
+  const sel = deleteSelectionIfAny(state);
+  if (sel) return sel;
+  const { line, col } = state.caret;
+  const len = lineLength(state, line);
+  if (col < len) return deleteRange(state, { line, col }, { line, col: len }, 'line');
+  return noop('line');
+}
+
 // ── internal ───────────────────────────────────────────────────────────────
 function clamp(n: number, lo: number, hi: number): number {
   return n < lo ? lo : n > hi ? hi : n;
