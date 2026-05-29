@@ -49,6 +49,8 @@ Deletion (NO hold-to-repeat — one action per keypress):
 Deletion collapses the gap and shifts following blocks/lines. **Deleting a space merges
 adjacent words.** Emptying a line removes it and shifts lines up.
 
+For Alt-movement / Alt-selection / Alt-deletion, a **"word boundary"** is whitespace, not color — a contiguous red+blue run (no space between them) counts as one word. Color-touching deletes may therefore cross into blue and count as a mistake (spec §3).
+
 ## 3. Mistakes (game-over model)
 - A **mistake** = any single delete action that removes one or more **blue** blocks.
   (One reckless `Cmd+Backspace` through three blues = **1** mistake, not three.)

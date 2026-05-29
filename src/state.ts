@@ -179,27 +179,22 @@ export interface CaretMove {
 
 /**
  * Column of the next word boundary to the left: skip any spaces, then skip the
- * color run. Shared by Alt-movement (KDA-35) and word-deletion (KDA-37) so
- * "word" means the same thing everywhere.
+ * full non-space run regardless of color. Text-editor semantics — a "word" for
+ * Alt-movement is bounded by whitespace, not by color changes (red and blue
+ * runs may touch). Shared by Alt-movement (KDA-35) and word-deletion (KDA-37).
  */
 export function wordLeftCol(blocks: Line, col: number): number {
   let i = clamp(col, 0, blocks.length);
   while (i > 0 && blocks[i - 1].color === null) i--;
-  if (i > 0) {
-    const kind = blocks[i - 1].color;
-    while (i > 0 && blocks[i - 1].color === kind) i--;
-  }
+  while (i > 0 && blocks[i - 1].color !== null) i--;
   return i;
 }
 
-/** Column of the next word boundary to the right: skip spaces, then the run. */
+/** Column of the next word boundary to the right: skip spaces, then the run (color-agnostic). */
 export function wordRightCol(blocks: Line, col: number): number {
   let i = clamp(col, 0, blocks.length);
   while (i < blocks.length && blocks[i].color === null) i++;
-  if (i < blocks.length) {
-    const kind = blocks[i].color;
-    while (i < blocks.length && blocks[i].color === kind) i++;
-  }
+  while (i < blocks.length && blocks[i].color !== null) i++;
   return i;
 }
 
