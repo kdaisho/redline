@@ -9,8 +9,8 @@ No real letters. Sharp, edgy aesthetic. Faster + fewer mistakes = better.
 - Canvas, **hard rectangular** editor frame (no rounded corners anywhere). HUD above:
   `score`, `time`, `stage`, and a strike indicator.
 - Grid of blocks: fixed block width `BW`, line height `LH`.
-- **Line** = row; holds 1–N **words** separated by ≥1 space block.
-- **Word (bar)** = run of same-color blocks, 4–20 wide, color ∈ {red, blue}. Lines may mix colors.
+- **Line** = row; holds 1–N **words**, optionally separated by space blocks.
+- **Word (bar)** = run of same-color blocks, 1–100 wide, color ∈ {red, blue}. Lines may mix colors and runs may sit directly adjacent (no space between them).
 - Spaces are empty blocks; caret can rest on them, nothing to delete.
 
 ```
@@ -71,9 +71,9 @@ adjacent words.** Emptying a line removes it and shifts lines up.
 - Stage-based speedrun. Each stage = a fixed board of preset lines. Clear every red
   (keeping blues) → advance to next stage.
 - **Later stages have more rows** (taller field / denser board) and harder mixes
-  (more blue traps between reds, wider reds).
-- Run continues through stages until **2 mistakes end it.**
-- Game over screen: stage reached, final score, total time, best (localStorage). Restart key.
+  (more blue traps between reds, wider reds, more touching red/blue runs).
+- A run ends at **stage 50** (win condition) or after **2 mistakes** (lose condition).
+- End screen: stage reached, final score, total time, best (localStorage). Restart key.
 
 ## 7. Rendering / theme
 - **Edgy/sharp:** hard rectangles, thin high-contrast strokes, monospace HUD, no

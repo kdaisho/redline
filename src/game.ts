@@ -16,7 +16,7 @@ import {
   posEqual,
 } from './state.ts';
 import { attachInput, type DeleteAction } from './input.ts';
-import { loadStage } from './stages.ts';
+import { loadStage, MAX_STAGE_INDEX } from './stages.ts';
 import { initAudio, loadMuted, toggleMute, playRedPop, playBlueError, playFanfare } from './audio.ts';
 
 const MAX_STRIKES = 2; // spec §3
@@ -192,7 +192,7 @@ export class Game {
   private stageIndex = 0; // 0-based
   private strikes = 0;
   private goalCol = 0; // sticky column for vertical movement
-  private phase: 'start' | 'countdown' | 'playing' | 'cleared' | 'over' = 'start';
+  private phase: 'start' | 'countdown' | 'playing' | 'cleared' | 'over' | 'won' = 'start';
   private best: Best = { score: 0, stage: 0, timeMs: 0 };
   private isNewBest = false;
   private detachInput: (() => void) | null = null;
@@ -386,6 +386,13 @@ export class Game {
 
   /** Advance to the next (denser/taller) stage; score/strikes/time carry forward. */
   private advanceStage(): void {
+    if (this.stageIndex >= MAX_STAGE_INDEX) {
+      // Cleared the final stage — run ends in a win (spec §6).
+      this.phase = 'won';
+      this.clock.freeze(performance.now());
+      this.finalizeRun();
+      return;
+    }
     this.stageIndex++;
     this.field = loadStage(this.stageIndex, this.runSeed);
     this.goalCol = 0;

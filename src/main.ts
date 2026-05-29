@@ -1,5 +1,7 @@
 import './style.css';
 import { Game } from './game.ts';
+import { playfieldCols, playfieldRows } from './render.ts';
+import { setMaxStageCols, setMaxStageRows } from './stages.ts';
 
 const canvas = document.querySelector<HTMLCanvasElement>('#game');
 if (!canvas) throw new Error('REDLINE: #game canvas not found');
@@ -21,6 +23,10 @@ function resize() {
 }
 resize();
 window.addEventListener('resize', resize);
+
+// Tell the stage generator how many blocks/rows fit at this canvas size.
+setMaxStageCols(playfieldCols(WIDTH));
+setMaxStageRows(playfieldRows(HEIGHT));
 
 const game = new Game(ctx, WIDTH, HEIGHT);
 game.start();

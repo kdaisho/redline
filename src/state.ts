@@ -19,8 +19,8 @@ export const LH = 26;
 
 // Word width bounds from the spec (§1). Board authoring should stay in range;
 // not hard-enforced so stages keep their freedom.
-export const MIN_WORD = 4;
-export const MAX_WORD = 20;
+export const MIN_WORD = 1;
+export const MAX_WORD = 100;
 
 // ── Types ──────────────────────────────────────────────────────────────────
 export type Color = 'red' | 'blue';
