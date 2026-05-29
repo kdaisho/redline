@@ -137,9 +137,19 @@ export function attachInput(handlers: InputHandlers, target: Window = window): (
     // A key still down from before play began: wait for a real release+press.
     if (heldOver.has(e.code)) return;
     // Same chords; Shift extends the selection instead of moving (both repeat).
-    const fire = e.shiftKey
+    const action$ = e.shiftKey
       ? () => handlers.select(action)
       : () => handlers.move(action);
+    // Guard each repeat fire: if play stopped (stage clear, countdown, etc.),
+    // self-cancel so the timer can't leak into the next stage and silently
+    // extend a selection from caret (0,0) once play resumes.
+    const fire = () => {
+      if (!handlers.isActive()) {
+        repeater.stop();
+        return;
+      }
+      action$();
+    };
     repeater.start(e.code, fire);
   };
 

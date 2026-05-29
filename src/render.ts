@@ -43,6 +43,18 @@ const HUD_H = 44; // HUD band height above the frame
 const FIELD_PAD = 14; // inset from pane top to first block
 const GUTTER_W = 42; // line-number column width
 const GUTTER_GAP = 10; // gap between gutter and first block
+
+/** How many blocks fit on one line for a given canvas width — stage generation reads this. */
+export function playfieldCols(canvasWidth: number): number {
+  const usable = canvasWidth - FRAME_PAD * 2 - GUTTER_W - GUTTER_GAP;
+  return Math.max(8, Math.floor(usable / BW));
+}
+
+/** How many lines fit vertically for a given canvas height — stage generation reads this. */
+export function playfieldRows(canvasHeight: number): number {
+  const usable = canvasHeight - HUD_H - FRAME_PAD * 2 - FIELD_PAD;
+  return Math.max(3, Math.floor(usable / LH));
+}
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace';
 
 // effect timings (ms)
@@ -85,7 +97,7 @@ export interface HudModel {
   muted: boolean; // audio mute state (KDA-46)
 }
 
-export type Phase = 'start' | 'countdown' | 'playing' | 'cleared' | 'over';
+export type Phase = 'start' | 'countdown' | 'playing' | 'cleared' | 'over' | 'won';
 
 export interface Scene {
   field: FieldState;
@@ -175,6 +187,7 @@ export function render(
   else if (scene.phase === 'cleared' && nowMs - scene.fx.clearedFlashMs >= CLEARED_BACKDROP_DELAY_MS)
     drawStageCleared(ctx, width, height, scene, nowMs);
   else if (scene.phase === 'over') drawGameOver(ctx, width, height, scene);
+  else if (scene.phase === 'won') drawWinScreen(ctx, width, height, scene);
 }
 
 /** Big centered 3-2-1 over the hidden board (KDA-49). */
@@ -437,6 +450,46 @@ function drawGameOver(ctx: CanvasRenderingContext2D, width: number, height: numb
   ctx.fillText('TWO MISTAKES', cx, height / 2 - 58);
 
   // stat rows, centered around cx
+  let y = height / 2 - 22;
+  statRow(ctx, cx, y, 'STAGE', String(scene.hud.stage), COLORS.text);
+  y += 26;
+  statRow(ctx, cx, y, 'SCORE', String(scene.hud.score), COLORS.text);
+  y += 26;
+  statRow(ctx, cx, y, 'TIME', formatTime(scene.hud.timeMs), COLORS.text);
+  y += 26;
+  statRow(ctx, cx, y, 'BEST', String(scene.best), scene.isNewBest ? COLORS.blue : COLORS.hudDim);
+
+  ctx.textAlign = 'center';
+  if (scene.isNewBest) {
+    ctx.fillStyle = COLORS.blue;
+    ctx.font = `bold 13px ${MONO}`;
+    ctx.fillText('★ NEW BEST ★', cx, y + 24);
+  }
+
+  ctx.fillStyle = COLORS.text;
+  ctx.font = `bold 14px ${MONO}`;
+  ctx.fillText('PRESS ENTER TO RESTART', cx, height / 2 + 104);
+
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+}
+
+function drawWinScreen(ctx: CanvasRenderingContext2D, width: number, height: number, scene: Scene): void {
+  ctx.fillStyle = 'rgba(7,10,14,0.86)';
+  ctx.fillRect(0, 0, width, height);
+
+  const cx = width / 2;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  ctx.fillStyle = COLORS.blue;
+  ctx.font = `bold 46px ${MONO}`;
+  ctx.fillText('YOU WIN', cx, height / 2 - 92);
+
+  ctx.fillStyle = COLORS.hudDim;
+  ctx.font = `12px ${MONO}`;
+  ctx.fillText('STAGE 50 CLEARED', cx, height / 2 - 58);
+
   let y = height / 2 - 22;
   statRow(ctx, cx, y, 'STAGE', String(scene.hud.stage), COLORS.text);
   y += 26;
