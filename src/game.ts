@@ -17,7 +17,7 @@ import {
   posEqual,
 } from './state.ts';
 import { attachInput, type DeleteAction } from './input.ts';
-import { loadStage, MAX_STAGE_INDEX } from './stages.ts';
+import { loadStage, stageBudgetMs, MAX_STAGE_INDEX } from './stages.ts';
 import { initAudio, loadMuted, toggleMute, playRedPop, playBlueError, playFanfare } from './audio.ts';
 
 const MAX_STRIKES = 2; // spec §3
@@ -27,6 +27,12 @@ const FLASH_LIFETIME_MS = 220; // prune snap-out flashes after they finish drawi
 const COUNTDOWN_FROM = 3;
 const COUNTDOWN_STEP_MS = 650; // per number; total = FROM × STEP
 const COUNTDOWN_MS = COUNTDOWN_FROM * COUNTDOWN_STEP_MS;
+
+// Deterministic boards (KDA-59): a fixed seed makes stages 1–50 identical on
+// every run for every player, so the per-stage time limit and leaderboard are
+// fair. This intentionally reverts the per-run board variety from KDA-50 — the
+// generator's stable stream lives at this seed.
+const RUN_SEED = 0;
 
 // ── best score persistence (spec §6) ────────────────────────────────────────
 const BEST_KEY = 'redline.best';
@@ -185,8 +191,14 @@ export class Game {
   private readonly height: number;
 
   private rafId = 0;
-  private readonly clock = new Clock();
+  private readonly clock = new Clock(); // total count-up time — the speedrun/score metric
   private elapsedMs = 0; // cached each frame for scene + combo timing
+
+  // Per-stage countdown (KDA-59): a separate clock that resets each stage and
+  // mirrors the main clock's pauses (countdown / cleared don't burn the budget).
+  private readonly stageClock = new Clock();
+  private stageLimitMs = 0; // time budget for the current stage, set on load
+  private stageRemainingMs = 0; // cached each frame: max(0, limit − stage elapsed)
 
   private field: FieldState;
   private scoreState = initialScore();
@@ -194,11 +206,11 @@ export class Game {
   private strikes = 0;
   private goalCol = 0; // sticky column for vertical movement
   private phase: 'start' | 'countdown' | 'playing' | 'cleared' | 'over' | 'won' = 'start';
+  private overReason: 'strikes' | 'timeout' = 'strikes'; // why the run ended (game-over subtitle)
   private best: Best = { score: 0, stage: 0, timeMs: 0 };
   private isNewBest = false;
   private detachInput: (() => void) | null = null;
   private muted = false; // KDA-46: HUD reflection of the audio mute state
-  private runSeed = 0; // KDA-50: per-run seed mixed into stage generation
 
   // ── pre-stage countdown (KDA-49) ──
   private countdownStartMs = 0; // performance.now() when the countdown began
@@ -259,9 +271,10 @@ export class Game {
 
   /** Reset all run state to a fresh stage 1, then run the pre-stage countdown. */
   private beginRun(): void {
-    this.runSeed = (Math.random() * 0x100000000) >>> 0; // fresh board variety each run (KDA-50)
     this.stageIndex = 0;
-    this.field = loadStage(0, this.runSeed);
+    this.field = loadStage(0, RUN_SEED); // fixed seed → identical boards every run (KDA-59)
+    this.stageLimitMs = stageBudgetMs(this.field.lines);
+    this.stageClock.reset();
     this.scoreState = initialScore();
     this.strikes = 0;
     this.goalCol = 0;
@@ -294,6 +307,7 @@ export class Game {
     this.goFlashMs = now;
     if (this.countdownFresh) this.clock.start(now);
     else this.clock.resume(now);
+    this.stageClock.start(now); // each stage's budget starts counting only now (KDA-59)
   }
 
   stop(): void {
@@ -391,6 +405,7 @@ export class Game {
     this.phase = 'cleared';
     const now = performance.now();
     this.clock.pause(now); // time stops while the celebration is up
+    this.stageClock.pause(now); // the stage budget freezes too — no penalty for reading the screen
     this.clearedFlashMs = now; // also gates the backdrop delay in render (KDA-48)
     playFanfare(); // KDA-47: short cue at the moment of clear, before the text
   }
@@ -400,12 +415,15 @@ export class Game {
     if (this.stageIndex >= MAX_STAGE_INDEX) {
       // Cleared the final stage — run ends in a win (spec §6).
       this.phase = 'won';
-      this.clock.freeze(performance.now());
+      const now = performance.now();
+      this.clock.freeze(now);
+      this.stageClock.freeze(now);
       this.finalizeRun();
       return;
     }
     this.stageIndex++;
-    this.field = loadStage(this.stageIndex, this.runSeed);
+    this.field = loadStage(this.stageIndex, RUN_SEED);
+    this.stageLimitMs = stageBudgetMs(this.field.lines);
     this.goalCol = 0;
     this.flashes = [];
     this.clearedFlashMs = -Infinity;
@@ -418,11 +436,17 @@ export class Game {
   private registerMistake(): void {
     this.strikes++;
     this.strikeFlashMs = performance.now(); // red flash
-    if (this.strikes >= MAX_STRIKES) {
-      this.phase = 'over';
-      this.clock.freeze(performance.now()); // capture the final time precisely
-      this.finalizeRun();
-    }
+    if (this.strikes >= MAX_STRIKES) this.endRun('strikes');
+  }
+
+  /** End the run in game over, freezing both clocks at the exact instant (KDA-59). */
+  private endRun(reason: 'strikes' | 'timeout'): void {
+    this.phase = 'over';
+    this.overReason = reason;
+    const now = performance.now();
+    this.clock.freeze(now); // capture the final time precisely
+    this.stageClock.freeze(now);
+    this.finalizeRun();
   }
 
   /** On game over, record a new best score (higher wins) to localStorage. */
@@ -450,12 +474,18 @@ export class Game {
     if (this.phase === 'countdown' && now - this.countdownStartMs >= COUNTDOWN_MS) {
       this.finishCountdown();
     }
+
+    // Per-stage countdown (KDA-59): frozen once the run ends, paused during
+    // cleared/countdown. Hitting zero while playing ends the run like a strike.
+    this.stageRemainingMs = Math.max(0, this.stageLimitMs - this.stageClock.elapsed(now));
+    if (this.phase === 'playing' && this.stageRemainingMs <= 0) this.endRun('timeout');
   }
 
   private scene(): Scene {
     return {
       field: this.field,
       phase: this.phase,
+      overReason: this.overReason,
       best: this.best.score,
       isNewBest: this.isNewBest,
       countdownNum: this.countdownDigit(),
@@ -466,6 +496,8 @@ export class Game {
         strikes: this.strikes,
         maxStrikes: MAX_STRIKES,
         muted: this.muted,
+        stageLimitMs: this.stageLimitMs,
+        stageRemainingMs: this.stageRemainingMs,
       },
       fx: {
         flashes: this.flashes,
