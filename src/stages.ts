@@ -35,8 +35,8 @@ export type Stage = Line[];
  * size is known (`render.playfieldCols`). The default keeps headless/test
  * contexts working without setup.
  */
-let MAX_LINE_COLS = 40;
-let MAX_LINE_ROWS = 19;
+let MAX_LINE_COLS = 78;
+let MAX_LINE_ROWS = 25;
 
 export function setMaxStageCols(cols: number): void {
   MAX_LINE_COLS = Math.max(8, Math.floor(cols));
@@ -113,8 +113,8 @@ function generateStage(index: number, runSeed: number): Stage {
   const d = Math.min(index, MAX_STAGE_INDEX);
   const t = d / MAX_STAGE_INDEX;
 
-  const rowCount  = Math.min(MAX_LINE_ROWS, clamp(Math.round(3 + d * 0.45), 3, 25));
-  const maxCols   = Math.min(MAX_LINE_COLS, Math.round(16 + d * 2.0));
+  const rowCount  = Math.min(MAX_LINE_ROWS, clamp(Math.round(3 + d * 0.5), 3, MAX_LINE_ROWS));
+  const maxCols   = Math.min(MAX_LINE_COLS, Math.round(20 + d * 2.5));
   const pAdjacent = clamp(d * 0.015, 0, 0.55);
 
   // Resample on invariant failure (rare — most archetypes satisfy them).
