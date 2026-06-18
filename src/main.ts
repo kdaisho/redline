@@ -10,8 +10,8 @@ const ctx = canvas.getContext('2d');
 if (!ctx) throw new Error('REDLINE: 2D context unavailable');
 
 // Logical render size; device-pixel-ratio scaling keeps strokes crisp.
-const WIDTH = 800;
-const HEIGHT = 600;
+const WIDTH = 1200;
+const HEIGHT = 760;
 
 function resize() {
   const dpr = window.devicePixelRatio || 1;
