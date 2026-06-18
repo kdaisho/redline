@@ -39,7 +39,7 @@ export const COLORS = {
 
 // ── layout ───────────────────────────────────────────────────────────────
 const FRAME_PAD = 24; // margin from canvas edge to editor frame
-const HUD_H = 44; // HUD band height above the frame
+const HUD_H = 56; // HUD band height above the frame — tall enough that the rule/gauge clear the value text
 const FIELD_PAD = 14; // inset from pane top to first block
 const GUTTER_W = 42; // line-number column width
 const GUTTER_GAP = 10; // gap between gutter and first block

@@ -424,6 +424,10 @@ export class Game {
     this.stageIndex++;
     this.field = loadStage(this.stageIndex, RUN_SEED);
     this.stageLimitMs = stageBudgetMs(this.field.lines);
+    // Reset the stage budget now (not at finishCountdown) so the LIMIT readout
+    // and gauge show the fresh full budget during the countdown instead of the
+    // previous stage's leftover time.
+    this.stageClock.reset();
     this.goalCol = 0;
     this.flashes = [];
     this.clearedFlashMs = -Infinity;
