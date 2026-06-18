@@ -373,7 +373,7 @@ function drawStartScreen(
   const lines = [
     'move  ← →   ·  word  ⌥← ⌥→   ·  line  ⌘← ⌘→   ·  ↑ ↓',
     'delete left  ⌫  ⌥⌫  ⌘⌫     ·     delete right  ⌦  ⌥⌦  ⌘⌦',
-    'select  ⇧ + move        ·        mute  M',
+    'select  ⇧ + move    ·    move row  ⌥↑ ⌥↓    ·    mute  M',
     'clear every red to advance · two mistakes ends the run',
   ];
   lines.forEach((t, i) => ctx.fillText(t, cx, height / 2 - 8 + i * 22));

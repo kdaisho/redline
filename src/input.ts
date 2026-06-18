@@ -26,6 +26,8 @@ export interface InputHandlers {
   /** Extend the selection by the same chord (Shift held). */
   select(action: MoveAction): void;
   delete(action: DeleteAction): void;
+  /** Alt(Option) + ↑/↓ — move the caret's row (or selected rows) up (-1) / down (+1). */
+  moveRow(dir: -1 | 1): void;
   /** Enter/Space — start or restart a run (start & game-over screens). */
   confirm(): void;
   /** M — toggle mute (KDA-46). */
@@ -121,6 +123,28 @@ export function attachInput(handlers: InputHandlers, target: Window = window): (
     if ((e.key === 'm' || e.key === 'M') && !e.metaKey && !e.ctrlKey) {
       e.preventDefault();
       if (!e.repeat) handlers.mute();
+      return;
+    }
+
+    // Alt(Option) + ↑/↓ → move the row(s) up/down (KDA-60). Plain Alt only —
+    // Cmd falls through to doc-start/end, Shift to line-selection. Repeats while
+    // held, gated by the same held-over/active rules as movement below.
+    if (e.altKey && !e.metaKey && !e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      e.preventDefault();
+      if (!handlers.isActive()) {
+        heldOver.add(e.code);
+        repeater.stop();
+        return;
+      }
+      if (heldOver.has(e.code)) return;
+      const dir = e.key === 'ArrowUp' ? -1 : 1;
+      repeater.start(e.code, () => {
+        if (!handlers.isActive()) {
+          repeater.stop();
+          return;
+        }
+        handlers.moveRow(dir);
+      });
       return;
     }
 

@@ -319,11 +319,15 @@ function collectRemoved(
 }
 
 /**
- * Remove blocks in [start, end) (reading order), collapsing the gap *within
- * each row*. Rows are permanent: a row that loses all its blocks stays in place
- * as an empty row, and lines are never joined or shifted up. Deleting a space
- * still merges adjacent words (they become neighbors after the splice).
- * Mutates `state`; returns the tally + removed cells.
+ * Remove blocks in [start, end) (reading order), collapsing the gap like a real
+ * code editor (VS Code). The start row's prefix joins the end row's suffix into
+ * one row, and any rows fully spanned in between vanish — everything below
+ * shifts up. A range that crosses a row boundary therefore removes that boundary
+ * (a "newline"); deleting a space still merges adjacent words. The caret lands
+ * at the join point. Mutates `state`; returns the tally + removed cells.
+ *
+ * Note: deleting all blocks *within* one row (start.line === end.line) leaves a
+ * blank row in place — a row only disappears when a delete joins across it.
  */
 export function deleteRange(
   state: FieldState,
@@ -333,11 +337,10 @@ export function deleteRange(
 ): DeleteResult {
   const { red, blue, cells } = collectRemoved(state.lines, start, end);
 
-  for (let l = start.line; l <= end.line; l++) {
-    const from = l === start.line ? start.col : 0;
-    const to = l === end.line ? end.col : state.lines[l].length;
-    state.lines[l] = [...state.lines[l].slice(0, from), ...state.lines[l].slice(to)];
-  }
+  const head = state.lines[start.line].slice(0, start.col);
+  const tail = state.lines[end.line].slice(end.col);
+  // Replace the spanned rows [start.line..end.line] with the single joined row.
+  state.lines.splice(start.line, end.line - start.line + 1, [...head, ...tail]);
 
   state.caret = { line: start.line, col: start.col };
   state.select = null;
@@ -366,16 +369,28 @@ function deleteSelectionIfAny(state: FieldState): DeleteResult | null {
   return null;
 }
 
-/** Backspace: delete selection, else one block left. No-op at column 0 (rows never join). */
+/** Start of the previous row (its end col), or null at the first row — the join target for backward deletes at col 0. */
+function prevRowEnd(state: FieldState, line: number): Pos | null {
+  return line > 0 ? { line: line - 1, col: state.lines[line - 1].length } : null;
+}
+
+/** Start of the next row (col 0), or null at the last row — the join target for forward deletes at line end. */
+function nextRowStart(state: FieldState, line: number): Pos | null {
+  return line < state.lines.length - 1 ? { line: line + 1, col: 0 } : null;
+}
+
+/** Backspace: delete selection, else one block left; at column 0, join onto the previous row. No-op at doc start. */
 export function deleteBackward(state: FieldState): DeleteResult {
   const sel = deleteSelectionIfAny(state);
   if (sel) return sel;
   const { line, col } = state.caret;
   if (col > 0) return deleteRange(state, { line, col: col - 1 }, { line, col }, 'char');
+  const prev = prevRowEnd(state, line);
+  if (prev) return deleteRange(state, prev, { line, col }, 'char');
   return noop('char');
 }
 
-/** Alt+Backspace: delete the word to the left. No-op at column 0. */
+/** Alt+Backspace: delete the word to the left; at column 0, join onto the previous row. No-op at doc start. */
 export function deleteWordLeft(state: FieldState): DeleteResult {
   const sel = deleteSelectionIfAny(state);
   if (sel) return sel;
@@ -383,32 +398,38 @@ export function deleteWordLeft(state: FieldState): DeleteResult {
   if (col > 0) {
     return deleteRange(state, { line, col: wordLeftCol(state.lines[line], col) }, { line, col }, 'word');
   }
+  const prev = prevRowEnd(state, line);
+  if (prev) return deleteRange(state, prev, { line, col }, 'word');
   return noop('word');
 }
 
-/** Cmd+Backspace: delete from caret to line start. No-op at column 0. */
+/** Cmd+Backspace: delete from caret to line start; at column 0, join onto the previous row. No-op at doc start. */
 export function deleteToLineStart(state: FieldState): DeleteResult {
   const sel = deleteSelectionIfAny(state);
   if (sel) return sel;
   const { line, col } = state.caret;
   if (col > 0) return deleteRange(state, { line, col: 0 }, { line, col }, 'line');
+  const prev = prevRowEnd(state, line);
+  if (prev) return deleteRange(state, prev, { line, col }, 'line');
   return noop('line');
 }
 
 // ── Forward deletion (macOS fn+Delete / forward-delete) — mirrors of the ──────
 // backward trio but rightward. The caret stays put (deletion is to the right);
-// each is a no-op at the line end, and rows never join (consistent with §1).
+// at the line end each joins the next row up, and each is a no-op at doc end.
 
-/** Delete (fn+Delete): delete selection, else one block right. No-op at line end. */
+/** Delete (fn+Delete): delete selection, else one block right; at line end, join the next row up. No-op at doc end. */
 export function deleteForward(state: FieldState): DeleteResult {
   const sel = deleteSelectionIfAny(state);
   if (sel) return sel;
   const { line, col } = state.caret;
   if (col < lineLength(state, line)) return deleteRange(state, { line, col }, { line, col: col + 1 }, 'char');
+  const next = nextRowStart(state, line);
+  if (next) return deleteRange(state, { line, col }, next, 'char');
   return noop('char');
 }
 
-/** Alt+Delete: delete the word to the right. No-op at line end. */
+/** Alt+Delete: delete the word to the right; at line end, join the next row up. No-op at doc end. */
 export function deleteWordRight(state: FieldState): DeleteResult {
   const sel = deleteSelectionIfAny(state);
   if (sel) return sel;
@@ -416,17 +437,57 @@ export function deleteWordRight(state: FieldState): DeleteResult {
   if (col < lineLength(state, line)) {
     return deleteRange(state, { line, col }, { line, col: wordRightCol(state.lines[line], col) }, 'word');
   }
+  const next = nextRowStart(state, line);
+  if (next) return deleteRange(state, { line, col }, next, 'word');
   return noop('word');
 }
 
-/** Cmd+Delete: delete from caret to line end. No-op at line end. */
+/** Cmd+Delete: delete from caret to line end; at line end, join the next row up. No-op at doc end. */
 export function deleteToLineEnd(state: FieldState): DeleteResult {
   const sel = deleteSelectionIfAny(state);
   if (sel) return sel;
   const { line, col } = state.caret;
   const len = lineLength(state, line);
   if (col < len) return deleteRange(state, { line, col }, { line, col: len }, 'line');
+  const next = nextRowStart(state, line);
+  if (next) return deleteRange(state, { line, col }, next, 'line');
   return noop('line');
+}
+
+// ── Row reordering (move line up/down, spec §2) ──────────────────────────────
+/**
+ * Move a row up (`dir = -1`) or down (`dir = +1`) like a code editor's
+ * Move-Line. The moved span is the caret's row, or — when a selection is active
+ * — every row the selection touches (its rows travel together). The caret and
+ * selection ride along so the same content stays under them. No-op (returns
+ * `false`) at the field edge; reorders only, removing nothing. Mutates `state`.
+ */
+export function moveRows(state: FieldState, dir: -1 | 1): boolean {
+  const sel = state.select && !isSelectionEmpty(state.select) ? normalizeSelection(state.select) : null;
+  const top = sel ? sel.start.line : state.caret.line;
+  const bottom = sel ? sel.end.line : state.caret.line;
+  const last = state.lines.length - 1;
+
+  if (dir === -1) {
+    if (top <= 0) return false;
+    // Lift the row above the span and drop it just below the span.
+    const [above] = state.lines.splice(top - 1, 1);
+    state.lines.splice(bottom, 0, above);
+  } else {
+    if (bottom >= last) return false;
+    // Lift the row below the span and drop it just above the span.
+    const [below] = state.lines.splice(bottom + 1, 1);
+    state.lines.splice(top, 0, below);
+  }
+
+  state.caret = { ...state.caret, line: state.caret.line + dir };
+  if (state.select) {
+    state.select = {
+      anchor: { ...state.select.anchor, line: state.select.anchor.line + dir },
+      head: { ...state.select.head, line: state.select.head.line + dir },
+    };
+  }
+  return true;
 }
 
 // ── internal ───────────────────────────────────────────────────────────────
