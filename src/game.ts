@@ -11,6 +11,7 @@ import {
   deleteForward,
   deleteWordRight,
   deleteToLineEnd,
+  moveRows,
   isMistake,
   redsRemaining,
   posEqual,
@@ -223,6 +224,7 @@ export class Game {
       move: (a) => this.onMove(a),
       select: (a) => this.onSelect(a),
       delete: (a) => this.onDelete(a),
+      moveRow: (d) => this.onMoveRow(d),
       confirm: () => this.onConfirm(),
       mute: () => this.onMute(),
       isActive: () => this.phase === 'playing',
@@ -324,6 +326,15 @@ export class Game {
     // Collapsing back onto the anchor clears the selection.
     this.field.select = posEqual(anchor, head) ? null : { anchor, head };
     this.markInput();
+  }
+
+  /** Alt+↑/↓: reorder rows. Pure layout — no blocks removed, so no score, mistake, or clear check. */
+  private onMoveRow(dir: -1 | 1): void {
+    if (this.phase !== 'playing') return;
+    if (moveRows(this.field, dir)) {
+      this.goalCol = this.field.caret.col;
+      this.markInput();
+    }
   }
 
   private onDelete(action: DeleteAction): void {

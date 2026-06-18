@@ -30,6 +30,7 @@ Movement (hold-to-repeat ENABLED):
 | Cmd + ← / → | line start / end |
 | ↑ / ↓ | line up / down (keep column) |
 | Cmd + ↑ / ↓ | first / last line |
+| Alt + ↑ / ↓ | move row (or selected rows) up / down |
 
 Selection (same chords + Shift, hold-to-repeat ENABLED, multi-line allowed):
 | Key | Action |
@@ -46,8 +47,16 @@ Deletion (NO hold-to-repeat — one action per keypress):
 | Alt + Backspace | delete word left |
 | Cmd + Backspace | delete caret → line start |
 
-Deletion collapses the gap and shifts following blocks/lines. **Deleting a space merges
-adjacent words.** Emptying a line removes it and shifts lines up.
+Deletion collapses the gap like a real code editor. A delete that crosses a row
+boundary removes that boundary: the start row's prefix joins the end row's suffix
+and the rows below shift up (Backspace at column 0 joins onto the previous row;
+forward-delete at line end pulls the next row up). **Deleting a space merges
+adjacent words.** Deleting every block *within* a row leaves a blank row — a row
+only disappears when a delete joins across it. A pure join removes no blocks, so
+it never scores and never counts as a mistake.
+
+Rows can also be reordered with **Alt + ↑/↓** (move the caret's row, or all
+selected rows, up/down) — layout only, deletes nothing.
 
 For Alt-movement / Alt-selection / Alt-deletion, a **"word boundary"** is whitespace, not color — a contiguous red+blue run (no space between them) counts as one word. Color-touching deletes may therefore cross into blue and count as a mistake (spec §3).
 
