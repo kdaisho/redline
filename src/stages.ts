@@ -85,6 +85,61 @@ export function loadStage(index: number, runSeed = 0): FieldState {
   return createField(board);
 }
 
+// ── per-stage time budget (KDA-59) ─────────────────────────────────────────
+/**
+ * Estimate a competent player's time to clear a board, derived deterministically
+ * from the board itself — the board is the ground truth of required work, so the
+ * budget is fair and reproducible (paired with the fixed RUN_SEED, every player
+ * faces the same boards with the same clock). Tuned by playtest; the constants
+ * are named for easy adjustment.
+ *
+ *   redRuns   — count of maximal red runs across all lines (navigate + delete)
+ *   redBlocks — total red blocks (width/precision of each delete)
+ *   rows      — number of lines (vertical travel)
+ *   traps     — blue runs wedged directly between reds (extra precision cost)
+ */
+const BUDGET_SETUP_S = 2; // orienting on a fresh board
+const BUDGET_PER_RUN_S = 0.6; // navigate to + issue a delete per red run
+const BUDGET_PER_BLOCK_S = 0.07; // width/precision of each red block
+const BUDGET_PER_ROW_S = 0.3; // vertical travel per line
+const BUDGET_PER_TRAP_S = 0.4; // a blue run pinned between reds (no slack to grab it)
+const BUDGET_SLACK = 0.8; // overall tightness (<1 = less than the raw estimate) — hard
+
+export function stageBudgetMs(lines: Line[]): number {
+  let redRuns = 0;
+  let redBlocks = 0;
+  let traps = 0;
+
+  for (const ln of lines) {
+    // Walk this line as a sequence of maximal same-color runs.
+    const runColors: (Color | null)[] = [];
+    let i = 0;
+    while (i < ln.length) {
+      const color = ln[i].color;
+      let j = i;
+      while (j < ln.length && ln[j].color === color) j++;
+      if (color === 'red') {
+        redRuns++;
+        redBlocks += j - i;
+      }
+      runColors.push(color);
+      i = j;
+    }
+    // A blue run with red on both sides (zero-space adjacency) is a precision trap.
+    for (let k = 1; k < runColors.length - 1; k++) {
+      if (runColors[k] === 'blue' && runColors[k - 1] === 'red' && runColors[k + 1] === 'red') traps++;
+    }
+  }
+
+  const estSeconds =
+    BUDGET_SETUP_S +
+    redRuns * BUDGET_PER_RUN_S +
+    redBlocks * BUDGET_PER_BLOCK_S +
+    lines.length * BUDGET_PER_ROW_S +
+    traps * BUDGET_PER_TRAP_S;
+  return Math.round(estSeconds * BUDGET_SLACK * 1000);
+}
+
 // ── generation ───────────────────────────────────────────────────────────
 type Run = { color: Color; width: number };
 type Archetype = 'solid-red' | 'mixed-classic' | 'trap-sandwich' | 'pepper' | 'cluster' | 'chaos';
@@ -113,8 +168,10 @@ function generateStage(index: number, runSeed: number): Stage {
   const d = Math.min(index, MAX_STAGE_INDEX);
   const t = d / MAX_STAGE_INDEX;
 
-  const rowCount  = Math.min(MAX_LINE_ROWS, clamp(Math.round(3 + d * 0.5), 3, MAX_LINE_ROWS));
-  const maxCols   = Math.min(MAX_LINE_COLS, Math.round(20 + d * 2.5));
+  // Block counts ramp hard with depth — more blocks per row AND more rows of
+  // blocks as stages climb, filling the field in both directions.
+  const rowCount  = Math.min(MAX_LINE_ROWS, clamp(Math.round(4 + d * 0.9), 3, MAX_LINE_ROWS));
+  const maxCols   = Math.min(MAX_LINE_COLS, Math.round(36 + d * 2.4));
   const pAdjacent = clamp(d * 0.015, 0, 0.55);
 
   // Resample on invariant failure (rare — most archetypes satisfy them).

@@ -10,8 +10,9 @@ const ctx = canvas.getContext('2d');
 if (!ctx) throw new Error('REDLINE: 2D context unavailable');
 
 // Logical render size; device-pixel-ratio scaling keeps strokes crisp.
-const WIDTH = 1200;
-const HEIGHT = 760;
+// Sane field size; the page scrolls if it overflows the viewport (KDA-59).
+const WIDTH = 1500;
+const HEIGHT = 1100;
 
 function resize() {
   const dpr = window.devicePixelRatio || 1;

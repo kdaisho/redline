@@ -57,6 +57,11 @@ export function playfieldRows(canvasHeight: number): number {
 }
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace';
 
+// All HUD/screen type scales through one knob (KDA-59) — bump everything ~1.2×.
+const FONT_SCALE = 1.2;
+const mono = (size: number, bold = false): string =>
+  `${bold ? 'bold ' : ''}${Math.round(size * FONT_SCALE)}px ${MONO}`;
+
 // effect timings (ms)
 const FLASH_MS = 180; // cleared-block snap-out
 const CARET_SOLID_MS = 500; // caret stays solid this long after input
@@ -95,6 +100,8 @@ export interface HudModel {
   strikes: number;
   maxStrikes: number;
   muted: boolean; // audio mute state (KDA-46)
+  stageLimitMs: number; // per-stage time budget (KDA-59); 0 before a run starts
+  stageRemainingMs: number; // time left on the current stage's countdown
 }
 
 export type Phase = 'start' | 'countdown' | 'playing' | 'cleared' | 'over' | 'won';
@@ -104,6 +111,7 @@ export interface Scene {
   hud: HudModel;
   fx: Fx;
   phase: Phase;
+  overReason: 'strikes' | 'timeout'; // why the run ended → game-over subtitle (KDA-59)
   best: number; // best score ever (localStorage), shown on start/over screens
   isNewBest: boolean; // this run beat the stored best
   countdownNum: number; // 3→2→1, shown while phase === 'countdown' (KDA-49)
@@ -139,6 +147,27 @@ function formatTime(ms: number): string {
   const cs = Math.floor((ms % 1000) / 10);
   const pad = (n: number) => n.toString().padStart(2, '0');
   return `${pad(m)}:${pad(s)}.${pad(cs)}`;
+}
+
+/** mm:ss for the per-stage countdown — ceil so it reads 0:01 until truly spent. */
+function formatCountdown(ms: number): string {
+  const total = Math.ceil(Math.max(0, ms) / 1000);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+/** Blend two #rrggbb theme tokens — drives the countdown gauge from calm to alarm. */
+function lerpHex(a: string, b: string, t: number): string {
+  const ai = parseInt(a.slice(1), 16);
+  const bi = parseInt(b.slice(1), 16);
+  const k = clamp01(t);
+  const mix = (shift: number) => {
+    const ca = (ai >> shift) & 0xff;
+    const cb = (bi >> shift) & 0xff;
+    return Math.round(ca + (cb - ca) * k);
+  };
+  return `rgb(${mix(16)},${mix(8)},${mix(0)})`;
 }
 
 // ── entry point ────────────────────────────────────────────────────────────
@@ -197,10 +226,10 @@ function drawCountdown(ctx: CanvasRenderingContext2D, width: number, height: num
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = COLORS.hudDim;
-  ctx.font = `13px ${MONO}`;
+  ctx.font = mono(13);
   ctx.fillText('GET READY', cx, cy - 70);
   ctx.fillStyle = COLORS.text;
-  ctx.font = `bold 120px ${MONO}`;
+  ctx.font = mono(120, true);
   ctx.fillText(String(num), cx, cy + 8);
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
@@ -221,7 +250,7 @@ function drawGoFlash(
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = COLORS.cleared;
-  ctx.font = `bold ${72 + p * 36}px ${MONO}`; // swell out as it fades
+  ctx.font = mono(72 + p * 36, true); // swell out as it fades
   ctx.fillText('GO', width / 2, height / 2);
   ctx.restore();
   ctx.textAlign = 'left';
@@ -274,7 +303,7 @@ function drawGutter(
   ctx.stroke();
 
   ctx.fillStyle = COLORS.gutter;
-  ctx.font = `12px ${MONO}`;
+  ctx.font = mono(12);
   ctx.textAlign = 'right';
   ctx.textBaseline = 'middle';
   for (let r = 0; r < field.lines.length; r++) {
@@ -334,12 +363,12 @@ function statRow(
   value: string,
   valueColor: string,
 ): void {
-  ctx.font = `13px ${MONO}`;
+  ctx.font = mono(13);
   ctx.fillStyle = COLORS.hudDim;
   ctx.textAlign = 'right';
   ctx.fillText(label, cx - 10, y);
   ctx.fillStyle = valueColor;
-  ctx.font = `16px ${MONO}`;
+  ctx.font = mono(16);
   ctx.textAlign = 'left';
   ctx.fillText(value, cx + 10, y);
 }
@@ -359,33 +388,33 @@ function drawStartScreen(
   ctx.textBaseline = 'middle';
 
   ctx.fillStyle = COLORS.text;
-  ctx.font = `bold 56px ${MONO}`;
+  ctx.font = mono(56, true);
   ctx.fillText('REDLINE', cx, height / 2 - 96);
 
-  ctx.font = `14px ${MONO}`;
+  ctx.font = mono(14);
   ctx.fillStyle = COLORS.red;
   ctx.fillText('RED = DELETE', cx - 70, height / 2 - 52);
   ctx.fillStyle = COLORS.blue;
   ctx.fillText('BLUE = KEEP', cx + 70, height / 2 - 52);
 
   ctx.fillStyle = COLORS.hudDim;
-  ctx.font = `12px ${MONO}`;
+  ctx.font = mono(12);
   const lines = [
     'move  ← →   ·  word  ⌥← ⌥→   ·  line  ⌘← ⌘→   ·  ↑ ↓',
     'delete left  ⌫  ⌥⌫  ⌘⌫     ·     delete right  ⌦  ⌥⌦  ⌘⌦',
     'select  ⇧ + move    ·    move row  ⌥↑ ⌥↓    ·    mute  M',
-    'clear every red to advance · two mistakes ends the run',
+    'clear every red to advance · two mistakes or the clock ends the run',
   ];
   lines.forEach((t, i) => ctx.fillText(t, cx, height / 2 - 8 + i * 22));
 
   if (best > 0) {
     ctx.fillStyle = COLORS.hudDim;
-    ctx.font = `13px ${MONO}`;
+    ctx.font = mono(13);
     ctx.fillText(`BEST  ${best}`, cx, height / 2 + 66);
   }
 
   ctx.fillStyle = COLORS.text;
-  ctx.font = `bold 14px ${MONO}`;
+  ctx.font = mono(14, true);
   ctx.fillText('PRESS ENTER TO START', cx, height / 2 + 104);
 
   ctx.textAlign = 'left';
@@ -411,11 +440,11 @@ function drawStageCleared(
   const grow = clamp01((nowMs - scene.fx.clearedFlashMs) / 260);
   const size = 30 + grow * 18;
   ctx.fillStyle = COLORS.cleared;
-  ctx.font = `bold ${size}px ${MONO}`;
+  ctx.font = mono(size, true);
   ctx.fillText('✓ STAGE CLEARED', cx, height / 2 - 84);
 
   ctx.fillStyle = COLORS.hudDim;
-  ctx.font = `12px ${MONO}`;
+  ctx.font = mono(12);
   ctx.fillText(`STAGE ${scene.hud.stage} DONE`, cx, height / 2 - 48);
 
   let y = height / 2 - 14;
@@ -425,7 +454,7 @@ function drawStageCleared(
 
   ctx.textAlign = 'center';
   ctx.fillStyle = COLORS.text;
-  ctx.font = `bold 14px ${MONO}`;
+  ctx.font = mono(14, true);
   ctx.fillText('PRESS ENTER FOR NEXT STAGE', cx, height / 2 + 80);
 
   ctx.textAlign = 'left';
@@ -442,12 +471,12 @@ function drawGameOver(ctx: CanvasRenderingContext2D, width: number, height: numb
   ctx.textBaseline = 'middle';
 
   ctx.fillStyle = COLORS.red;
-  ctx.font = `bold 46px ${MONO}`;
+  ctx.font = mono(46, true);
   ctx.fillText('GAME OVER', cx, height / 2 - 92);
 
   ctx.fillStyle = COLORS.hudDim;
-  ctx.font = `12px ${MONO}`;
-  ctx.fillText('TWO MISTAKES', cx, height / 2 - 58);
+  ctx.font = mono(12);
+  ctx.fillText(scene.overReason === 'timeout' ? 'TIME UP' : 'TWO MISTAKES', cx, height / 2 - 58);
 
   // stat rows, centered around cx
   let y = height / 2 - 22;
@@ -462,12 +491,12 @@ function drawGameOver(ctx: CanvasRenderingContext2D, width: number, height: numb
   ctx.textAlign = 'center';
   if (scene.isNewBest) {
     ctx.fillStyle = COLORS.blue;
-    ctx.font = `bold 13px ${MONO}`;
+    ctx.font = mono(13, true);
     ctx.fillText('★ NEW BEST ★', cx, y + 24);
   }
 
   ctx.fillStyle = COLORS.text;
-  ctx.font = `bold 14px ${MONO}`;
+  ctx.font = mono(14, true);
   ctx.fillText('PRESS ENTER TO RESTART', cx, height / 2 + 104);
 
   ctx.textAlign = 'left';
@@ -483,11 +512,11 @@ function drawWinScreen(ctx: CanvasRenderingContext2D, width: number, height: num
   ctx.textBaseline = 'middle';
 
   ctx.fillStyle = COLORS.blue;
-  ctx.font = `bold 46px ${MONO}`;
+  ctx.font = mono(46, true);
   ctx.fillText('YOU WIN', cx, height / 2 - 92);
 
   ctx.fillStyle = COLORS.hudDim;
-  ctx.font = `12px ${MONO}`;
+  ctx.font = mono(12);
   ctx.fillText('STAGE 50 CLEARED', cx, height / 2 - 58);
 
   let y = height / 2 - 22;
@@ -502,12 +531,12 @@ function drawWinScreen(ctx: CanvasRenderingContext2D, width: number, height: num
   ctx.textAlign = 'center';
   if (scene.isNewBest) {
     ctx.fillStyle = COLORS.blue;
-    ctx.font = `bold 13px ${MONO}`;
+    ctx.font = mono(13, true);
     ctx.fillText('★ NEW BEST ★', cx, y + 24);
   }
 
   ctx.fillStyle = COLORS.text;
-  ctx.font = `bold 14px ${MONO}`;
+  ctx.font = mono(14, true);
   ctx.fillText('PRESS ENTER TO RESTART', cx, height / 2 + 104);
 
   ctx.textAlign = 'left';
@@ -537,12 +566,12 @@ function drawHud(
   // labels in dim, values in bright — monospace throughout
   const label = (s: string) => {
     ctx.fillStyle = COLORS.hudDim;
-    ctx.font = `11px ${MONO}`;
+    ctx.font = mono(11);
     return ctx.measureText(s).width;
   };
   const value = (s: string) => {
     ctx.fillStyle = COLORS.text;
-    ctx.font = `18px ${MONO}`;
+    ctx.font = mono(18);
     return ctx.measureText(s).width;
   };
 
@@ -556,60 +585,86 @@ function drawHud(
   // STAGE (left of center)
   x = FRAME_PAD + 140;
   ctx.fillStyle = COLORS.hudDim;
-  ctx.font = `11px ${MONO}`;
+  ctx.font = mono(11);
   ctx.fillText('STAGE', x, y);
   ctx.fillStyle = COLORS.text;
-  ctx.font = `18px ${MONO}`;
+  ctx.font = mono(18);
   ctx.fillText(String(hud.stage), x, y + 14);
 
   // COMBO (only while a combo is alive) — pulses bigger right after a clean delete
   if (fx.comboLevel >= 1) {
     const cxp = FRAME_PAD + 250;
     ctx.fillStyle = COLORS.hudDim;
-    ctx.font = `11px ${MONO}`;
+    ctx.font = mono(11);
     ctx.fillText('COMBO', cxp, y);
     const pulse = clamp01((nowMs - fx.comboPulseMs) / COMBO_PULSE_MS);
     const size = 18 + (1 - pulse) * 9; // swell on increment, settle to 18
     ctx.fillStyle = COLORS.text;
-    ctx.font = `bold ${size}px ${MONO}`;
+    ctx.font = mono(size, true);
     ctx.fillText(`×${2 ** fx.comboLevel}`, cxp, y + 14 - (size - 18) / 2);
+  }
+
+  // LIMIT (per-stage countdown, KDA-59) — mm:ss that reddens as it nears zero
+  if (hud.stageLimitMs > 0) {
+    const ratio = clamp01(hud.stageRemainingMs / hud.stageLimitMs);
+    const limitX = FRAME_PAD + 460;
+    ctx.fillStyle = COLORS.hudDim;
+    ctx.font = mono(11);
+    ctx.fillText('LIMIT', limitX, y);
+    ctx.fillStyle = lerpHex(COLORS.blue, COLORS.red, 1 - ratio * 2); // calm → alarm over the last half
+    ctx.font = mono(18);
+    ctx.fillText(formatCountdown(hud.stageRemainingMs), limitX, y + 14);
   }
 
   // SOUND (mute indicator, KDA-46) — sits in the open space before STRIKES
   const sndX = FRAME_PAD + 360;
   ctx.fillStyle = COLORS.hudDim;
-  ctx.font = `11px ${MONO}`;
+  ctx.font = mono(11);
   ctx.fillText('SOUND', sndX, y);
   ctx.fillStyle = hud.muted ? COLORS.hudDim : COLORS.text;
-  ctx.font = `18px ${MONO}`;
+  ctx.font = mono(18);
   ctx.fillText(hud.muted ? '✕ MUTED' : '♪ ON', sndX, y + 14);
 
   // TIME (right-aligned)
   const timeStr = formatTime(hud.timeMs);
-  ctx.font = `18px ${MONO}`;
+  ctx.font = mono(18);
   const tw = ctx.measureText(timeStr).width;
   const tx = width - FRAME_PAD - tw;
   ctx.fillStyle = COLORS.hudDim;
-  ctx.font = `11px ${MONO}`;
+  ctx.font = mono(11);
   ctx.fillText('TIME', tx, y);
   ctx.fillStyle = COLORS.text;
-  ctx.font = `18px ${MONO}`;
+  ctx.font = mono(18);
   ctx.fillText(timeStr, tx, y + 14);
 
   // STRIKES (left of TIME): filled ✕ for used, dim for remaining
-  ctx.font = `18px ${MONO}`;
+  ctx.font = mono(18);
   const marks = '✕ '.repeat(hud.maxStrikes).trimEnd();
   const sw = ctx.measureText(marks).width;
   const sx = tx - 40 - sw;
   ctx.fillStyle = COLORS.hudDim;
-  ctx.font = `11px ${MONO}`;
+  ctx.font = mono(11);
   ctx.fillText('STRIKES', sx, y);
-  ctx.font = `18px ${MONO}`;
+  ctx.font = mono(18);
   let cx = sx;
   for (let i = 0; i < hud.maxStrikes; i++) {
     ctx.fillStyle = i < hud.strikes ? COLORS.strikeOn : COLORS.strikeOff;
     ctx.fillText('✕', cx, y + 14);
     cx += ctx.measureText('✕ ').width;
+  }
+
+  // Per-stage countdown gauge (KDA-59): a full-width bar over the HUD rule that
+  // depletes left-to-right and shifts blue → red as the budget runs out.
+  if (hud.stageLimitMs > 0) {
+    const ratio = clamp01(hud.stageRemainingMs / hud.stageLimitMs);
+    const bx = FRAME_PAD;
+    const bw = width - FRAME_PAD * 2;
+    const bh = 3;
+    const by = ruleY - 1;
+    ctx.fillStyle = COLORS.strikeOff; // depleted track
+    ctx.fillRect(bx, by, bw, bh);
+    ctx.fillStyle = lerpHex(COLORS.blue, COLORS.red, 1 - ratio * 2);
+    ctx.fillRect(bx, by, bw * ratio, bh);
   }
 }
 
