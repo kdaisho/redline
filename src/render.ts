@@ -14,7 +14,8 @@ import {
   LH,
   normalizeSelection,
 } from './state.ts';
-import { type Mode, MODES, modeInfo } from './modes.ts';
+import { type Mode, type HelpSection, MODES, modeInfo } from './modes.ts';
+import { type VimStatus, type Span } from './vim.ts';
 
 /** Terminal palette (spec §7): pastel red/blue text on a stark editor pane. */
 export const COLORS = {
@@ -122,10 +123,17 @@ export interface Scene {
   fx: Fx;
   phase: Phase;
   mode: Mode; // active control mode (#8) → HUD label, start-screen picker + key help
+  vim: VimView | null; // Vim mode's statusline + Visual selection (#7); null in other modes
+  helpOpen: boolean; // F1 help screen is up (covers everything but the HUD)
   overReason: 'strikes' | 'timeout'; // why the run ended → game-over subtitle (KDA-59)
   best: number; // best score ever (localStorage), shown on start/over screens
   isNewBest: boolean; // this run beat the stored best
   countdownNum: number; // 3→2→1, shown while phase === 'countdown' (KDA-49)
+}
+
+/** What Vim mode adds to the picture: the statusline and the Visual selection. */
+export interface VimView extends VimStatus {
+  spans: Span[];
 }
 
 interface FieldGeom {
@@ -213,9 +221,12 @@ export function render(
     drawBlocks(ctx, scene.field, geom);
     // selection drawn AFTER blocks so the highlight reads clearly over the text
     if (scene.field.select) drawSelection(ctx, scene.field, scene.field.select, geom);
+    if (scene.vim) for (const s of scene.vim.spans) drawSpan(ctx, geom, s.line, s.from, s.to);
     drawFlashes(ctx, scene.fx, geom, nowMs);
-    drawCaret(ctx, scene.field, scene.fx, nowMs, geom);
+    if (scene.vim) drawBlockCursor(ctx, scene.field, scene.vim, scene.fx, nowMs, geom);
+    else drawCaret(ctx, scene.field, scene.fx, nowMs, geom);
   }
+  drawFootline(ctx, width, height, scene);
 
   drawStrikeFlash(ctx, width, height, scene.fx, nowMs);
   drawClearedFlash(ctx, width, height, scene.fx, nowMs);
@@ -228,6 +239,124 @@ export function render(
     drawStageCleared(ctx, width, height, scene, nowMs);
   else if (scene.phase === 'over') drawGameOver(ctx, width, height, scene);
   else if (scene.phase === 'won') drawWinScreen(ctx, width, height, scene);
+
+  if (scene.helpOpen) drawHelp(ctx, width, height, scene.mode);
+}
+
+/**
+ * The strip under the editor frame. In Vim mode it is the statusline: mode (or
+ * the search prompt, or a message) on the left, the half-typed command on the
+ * right. In every mode it carries the help / mute key hint while playing.
+ */
+function drawFootline(ctx: CanvasRenderingContext2D, width: number, height: number, scene: Scene): void {
+  if (scene.phase !== 'playing' && scene.phase !== 'countdown') return;
+  const y = height - FRAME_PAD / 2 + 1;
+  ctx.textBaseline = 'middle';
+  ctx.font = mono(11);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COLORS.gutter;
+  ctx.fillText('F1 HELP  ·  F2 MUTE', width / 2, y);
+
+  const vim = scene.vim;
+  if (vim) {
+    ctx.textAlign = 'left';
+    ctx.font = mono(11, true);
+    if (vim.prompt !== null) {
+      ctx.fillStyle = COLORS.text;
+      ctx.fillText(`${vim.prompt}█`, FRAME_PAD, y);
+    } else if (vim.message) {
+      ctx.fillStyle = COLORS.red;
+      ctx.fillText(vim.message, FRAME_PAD, y);
+    } else {
+      const label =
+        vim.mode === 'normal'
+          ? '-- NORMAL --'
+          : vim.mode === 'visual'
+            ? '-- VISUAL --'
+            : vim.mode === 'visual-line'
+              ? '-- VISUAL LINE --'
+              : '-- VISUAL BLOCK --';
+      ctx.fillStyle = vim.mode === 'normal' ? COLORS.hudDim : COLORS.selectionEdge;
+      ctx.fillText(label, FRAME_PAD, y);
+    }
+    // pending keys (Vim's showcmd), right-aligned
+    if (vim.pending) {
+      ctx.textAlign = 'right';
+      ctx.fillStyle = COLORS.text;
+      ctx.fillText(vim.pending, width - FRAME_PAD, y);
+    }
+  }
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+}
+
+/**
+ * Help screen (F1): every key of the active mode, in two columns of titled
+ * sections. Opaque below the HUD — while it is up the board is not readable.
+ */
+function drawHelp(ctx: CanvasRenderingContext2D, width: number, height: number, mode: Mode): void {
+  const top = FRAME_PAD + HUD_H;
+  ctx.fillStyle = COLORS.bg;
+  ctx.fillRect(0, top, width, height - top);
+
+  const info = modeInfo(mode);
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = COLORS.text;
+  ctx.font = mono(20, true);
+  ctx.fillText(`${info.label} MODE — KEYS`, FRAME_PAD, top + 26);
+  ctx.textAlign = 'right';
+  ctx.fillStyle = COLORS.hudDim;
+  ctx.font = mono(12);
+  ctx.fillText('F1 / ESC / ENTER  —  CLOSE', width - FRAME_PAD, top + 26);
+
+  const ROW_H = 21;
+  const TITLE_H = 26;
+  const GAP = 16; // between sections
+  const KEYS_W = 300; // width of the keys column inside a help column
+  const heightOf = (s: HelpSection) => TITLE_H + s.rows.length * ROW_H + GAP;
+
+  // Fill the left column to about half the total height, then the right.
+  const total = info.help.reduce((h, s) => h + heightOf(s), 0);
+  const colW = (width - FRAME_PAD * 2) / 2;
+  let col = 0;
+  let y = top + 64;
+  let used = 0;
+  for (const section of info.help) {
+    if (col === 0 && used > 0 && used + heightOf(section) / 2 > total / 2) {
+      col = 1;
+      y = top + 64;
+    }
+    used += heightOf(section);
+    const x = FRAME_PAD + col * colW;
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = COLORS.blue;
+    ctx.font = mono(12, true);
+    ctx.fillText(section.title, x, y);
+    ctx.strokeStyle = COLORS.hudRule;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, Math.round(y + 11) + 0.5);
+    ctx.lineTo(x + colW - 32, Math.round(y + 11) + 0.5);
+    ctx.stroke();
+    y += TITLE_H;
+
+    for (const [keys, what] of section.rows) {
+      ctx.fillStyle = COLORS.text;
+      ctx.font = mono(12, true);
+      ctx.fillText(keys, x, y);
+      ctx.fillStyle = COLORS.hudDim;
+      ctx.font = mono(12);
+      ctx.fillText(what, x + KEYS_W, y);
+      y += ROW_H;
+    }
+    y += GAP;
+  }
+
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
 }
 
 /** Big centered 3-2-1 over the hidden board (KDA-49). */
@@ -807,16 +936,61 @@ function drawSelection(
     const len = field.lines[r]?.length ?? 0;
     const from = r === start.line ? start.col : 0;
     const to = r === end.line ? end.col : len;
-    if (to <= from) continue;
-    const x = geom.ox + from * BW;
-    const y = geom.oy + r * LH;
-    const w = (to - from) * BW;
-    const h = LH - 2;
-    // translucent overlay tints the text, bright outline pins the bounds
-    ctx.fillStyle = COLORS.selection;
-    ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = COLORS.selectionEdge;
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(x + 0.75, y + 0.75, w - 1.5, h - 1.5);
+    drawSpan(ctx, geom, r, from, to);
+  }
+}
+
+/** One selected stretch of a row, cells `[from, to)` — shared by Standard selection and Vim's Visual modes. */
+function drawSpan(ctx: CanvasRenderingContext2D, geom: FieldGeom, row: number, from: number, to: number): void {
+  if (to <= from) return;
+  const x = geom.ox + from * BW;
+  const y = geom.oy + row * LH;
+  const w = (to - from) * BW;
+  const h = LH - 2;
+  // translucent overlay tints the text, bright outline pins the bounds
+  ctx.fillStyle = COLORS.selection;
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = COLORS.selectionEdge;
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(x + 0.75, y + 0.75, w - 1.5, h - 1.5);
+}
+
+/**
+ * Vim's cursor (#7): a block ON the character at `caret.col`, with the character
+ * redrawn dark on top so it stays readable. While an operator waits for its
+ * motion (`d…`) it shrinks to the lower half, as in Vim.
+ */
+function drawBlockCursor(
+  ctx: CanvasRenderingContext2D,
+  field: FieldState,
+  vim: VimView,
+  fx: Fx,
+  nowMs: number,
+  geom: FieldGeom,
+): void {
+  const t = nowMs - fx.lastInputMs;
+  const visible = t < CARET_SOLID_MS || Math.floor((t - CARET_SOLID_MS) / CARET_BLINK_MS) % 2 === 0;
+  if (!visible) return;
+
+  const { line, col } = field.caret;
+  const x = geom.ox + col * BW;
+  const y = geom.oy + line * LH;
+  const h = LH - 2;
+  ctx.fillStyle = COLORS.caret;
+  if (vim.operator) {
+    ctx.fillRect(x, y + h / 2, BW, h / 2);
+    return;
+  }
+  ctx.fillRect(x, y, BW, h);
+
+  const b = field.lines[line]?.[col];
+  if (b && b.color !== null) {
+    ctx.font = GLYPH_FONT;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = COLORS.panel;
+    ctx.fillText(b.ch, x + BW / 2, y + CELL_TOP + CELL_H / 2 + 1);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
   }
 }

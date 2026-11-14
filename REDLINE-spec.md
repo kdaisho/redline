@@ -33,7 +33,7 @@ in every mode; only the keys differ.
 | Mode | Keys |
 |---|---|
 | **Standard** | macOS editor chords + shift-selection (below) |
-| **Vim** | modal Vim editing — listed, not playable yet (#7) |
+| **Vim** | modal, delete-only Vim (below) |
 
 - The start screen has a mode picker: press the mode's number (`1`, `2`, …) or
   `Tab` to switch. The choice is remembered (localStorage `redline.mode`).
@@ -43,7 +43,12 @@ in every mode; only the keys differ.
   start screen, where the mode can be changed.
 - **Best scores are per mode** (§6).
 
-Global keys (every mode): `Enter` / `Space` start, advance, restart · `M` mute.
+Global keys (every mode): `Enter` / `Space` start, advance, restart · `M` or `F2`
+mute · `F1` help. A mode may claim a global typing key while playing (Vim claims
+`M`, `Enter`, `Space`, `Esc`); `F1` / `F2` can never be claimed.
+
+**Help screen (`F1`)**, on the start screen or mid-stage: every key of the active
+mode. Mid-stage it is a pause — both clocks stop and the board is hidden.
 
 ### Standard mode — full macOS chords + shift-selection
 
@@ -85,6 +90,74 @@ selected rows, up/down) — layout only, deletes nothing.
 
 For Alt-movement / Alt-selection / Alt-deletion, a **"word boundary"** is whitespace, not color — a contiguous red+blue run (no space between them) counts as one word. Color-touching deletes may therefore cross into blue and count as a mistake (spec §3).
 
+### Vim mode — modal, delete-only
+
+Real Vim semantics over the same field, limited to what the game needs: moving
+and deleting. The engine (`vim.ts`) is a pure module; its word motions, operator
+ranges and text objects follow Vim's own algorithms and were checked against the
+`vim` binary.
+
+- **Modes:** Normal, Visual (`v`), Visual Line (`V`), Visual Block (`Ctrl-v`).
+  `Esc` / `Ctrl-[` / `Ctrl-c` return to Normal and cancel a half-typed command.
+- **Cursor:** a block ON a character (column 0..len-1). In Visual it may also rest
+  on the end-of-row position, which selects the row break. Half-height while an
+  operator waits for its motion.
+- **Statusline** (under the editor frame): the mode, or the search prompt, or a
+  message, on the left; the half-typed command (`d2`, `df`) on the right.
+- **Words:** identifier characters (`A-Z a-z 0-9 _`) vs punctuation, separated by
+  whitespace — `charClass`, the same classes the board generator uses, so each
+  Vim word is a single color. WORDS (`W B E`) are split by whitespace only.
+
+| Keys | Action |
+|---|---|
+| `h j k l` (arrows) | left / down / up / right; `j k` keep the column |
+| `w b e ge` · `W B E gE` | word / WORD motions |
+| `0 ^ $` | row start / first non-blank / row end |
+| `gg G {n}G` · `H M L` | first / last / n-th row · top / middle / bottom row of the field |
+| `{ }` | previous / next blank row |
+| `f F t T {char}` · `; ,` | find in row · repeat / reverse |
+| `%` | matching `( ) [ ] { }` |
+| `/text` `?text` `Enter` · `n N` · `* #` | search (plain text, wraps) · next / previous · word under cursor |
+| `x X Del` · `D` · `dd` | delete character / to row end / whole row |
+| `d{motion}` · `d{text object}` | delete over a motion or object |
+| `iw aw iW aW` · `i" a" i' a'` `` i` a` `` · `i( a( i[ a[ i{ a{ i< a<` | text objects (also `) ] } > b B`) |
+| counts | `3w` `5dd` `d2w` `2d3w` `4x` `3.` |
+| `.` | repeat the last delete command |
+| Visual: `d x Del` · `X` · `D` · `o O` | delete selection · selected rows · rows / block to row ends · other end |
+
+Rules that follow Vim: `dw` on the last word of a row stops at the row end; `de`
+is inclusive, `dw` / `db` exclusive; `dd`, `dj`, `dG` … are linewise and **remove
+the rows**; a charwise delete across rows joins them; `daw` takes the trailing
+space (or the leading one at the end of a row); bracket objects outside any pair
+use the next pair (Vim 9.1). A command that fails deletes nothing.
+
+**Delete-only:** there is no Insert mode — `i a o O I A r R J ~` do nothing
+(`i` / `a` only start a text object after `d` or in Visual). `c` `s` `C` `S`
+delete exactly like `d` `x` `D` `dd`. **No undo** (`u`), no yank / put, registers,
+macros, marks, or `:` command line. Search is plain text, not regex.
+
+**Hold-to-repeat:** a motion typed as a single key repeats while held (`j`, `w`,
+`;`, `n` …). Deletes never auto-repeat, and neither does a motion with a count,
+an operator or a prefix.
+
+**Game keys in Vim mode:** while playing, Vim owns every typing key, including
+`M` (a motion), `Enter`, `Space` and `Esc`. Mute is `F2` and help is `F1` — both
+work in every mode and phase. On the start / clear / end screens `Enter`, `M`,
+`Esc`, `Tab` and the number keys are the game's again.
+
+**One delete command = one action** for scoring and mistakes, whatever its count
+or shape (`3dd`, a Visual Block, `.`). Chord for the big-chord multiplier (§4):
+
+| Command | Chord |
+|---|---|
+| `x X Del s`, `dh dl` | char ×1 |
+| `d` + `w b e ge W B E gE`, `f F t T ; ,`, `%`, `/ ? n N * #`; `d` + any text object | word ×1.5 |
+| `dd cc S`, `D C`, `d$ d0 d^`, `dj dk dgg dG dH dM dL`, `d{ d}` | line ×2 |
+| any Visual-mode delete | selection ×2 |
+
+`.` scores with the chord of the command it repeats.
+
+
 ## 3. Mistakes (game-over model)
 - A **mistake** = any single delete action that removes one or more **blue** blocks.
   (One reckless `Cmd+Backspace` through three blues = **1** mistake, not three.)
@@ -94,7 +167,8 @@ For Alt-movement / Alt-selection / Alt-deletion, a **"word boundary"** is whites
 
 ## 4. Scoring (combo + big-chord)
 - Base **+10 per red character** deleted.
-- **Big-chord bonus:** per-block multiplier by chord — char ×1, word ×1.5, line ×2.
+- **Big-chord bonus:** per-block multiplier by chord — char ×1, word ×1.5, line ×2,
+  selection ×2. Each mode maps its delete commands onto these chords (Vim: §2).
 - **Combo multiplier:** consecutive clean deletes with no pause >1.5s build ×1→×2→×4…;
   mistake or timeout resets to ×1.
 - Per-delete = `redBlocksDeleted × 10 × chordMult × comboMult`. Blue blocks score nothing.
@@ -116,7 +190,8 @@ For Alt-movement / Alt-selection / Alt-deletion, a **"word boundary"** is whites
 ## 7. Rendering / theme
 - **Edgy/sharp:** hard rectangles, thin high-contrast strokes, monospace HUD, no
   shadows/rounding. Red `#F5A0A0`-ish, blue `#7FB8F0`-ish, on a stark/terminal background (TBD).
-- Caret: sharp blinking grey block, one line tall.
+- Caret: sharp blinking grey block, one line tall (Standard: a bar before the
+  character; Vim: a block on the character).
 - Selection: hard-edged translucent highlight.
 - Field text: bold monospace glyphs in red/blue over a faint same-color cell backing.
 - Delete feedback (the satisfying core): cleared characters flash/snap out before the row
@@ -127,8 +202,11 @@ For Alt-movement / Alt-selection / Alt-deletion, a **"word boundary"** is whites
 - Modules: `state.ts` (model + caret/selection/delete ops), `modes.ts` (mode registry,
   remembered choice), `input.ts` (shared key controller: listeners, repeat handling,
   global keys), `keymaps/<mode>.ts` (one keymap per mode over the shared field actions),
-  `render.ts`, `game.ts` (loop, stages, scoring, strikes), `stages.ts` (board
-  definitions), `main.ts`.
+  `vim.ts` (the Vim engine — pure, no DOM), `render.ts`, `game.ts` (loop, stages,
+  scoring, strikes), `stages.ts` (board definitions), `main.ts`.
+- Tests: **vitest** (`pnpm test`), headless — `vim.test.ts` (engine) and
+  `vim-play.test.ts` (key controller wiring, and a bot clearing all 50 stages with
+  Vim keys).
 
 ---
 
