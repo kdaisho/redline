@@ -9,7 +9,25 @@
  *
  * What "delete-only" means: Normal, Visual (`v`), Visual Line (`V`) and Visual
  * Block (`Ctrl-v`). There is no Insert mode, no undo, no yank/put, no registers,
- * macros or marks. `c`/`s`/`C`/`S` delete like `d`/`x`/`D`/`dd`.
+ * macros or marks. `c` / `C` delete like `d` / `D`.
+ *
+ * The keys are LazyVim's, not stock Vim's (#9 — the full list, binding by
+ * binding, is `docs/lazyvim-keymap-audit.md`):
+ *  - flash.nvim: `s{text}{label}` jumps (`flash.ts` does the matching and
+ *    labelling); after an operator it is the target (`ds…`, inclusive), `dr…`
+ *    runs the operator at the target and returns, and in Visual it extends the
+ *    selection. `f F t T` search across rows, ignore case for a lowercase
+ *    character, and repeat with the same key (`f` onward, `F` back) until another
+ *    key is pressed; `; ,` repeat as well. So `s` is not `x`, and `S` / `R` /
+ *    Ctrl-Space (flash's treesitter pickers) do nothing: there is no syntax tree.
+ *  - mini.ai: every `i` / `a` object except `w W p B` is mini.ai's (`miniai.ts`) —
+ *    brackets, `b`, quotes, `q`, argument `a`, call `u U`, digits `d`, case part
+ *    `e`, field `g`, separators — with `in il an al` and `g[` `g]`. mini.ai's
+ *    rules differ from Vim's: `a"` takes no outer space, `i(` drops the inner
+ *    padding, an object ahead on the row is used when none covers the cursor.
+ *  - `Alt-j` / `Alt-k` move the row (Visual: the selected rows) down / up.
+ *  - `n` always searches forward and `N` backward; `gj` / `gk` exist.
+ *  - `[x` and `]x` (LazyVim's next / previous pairs) swallow their second key.
  *
  * In this mode the caret is a block cursor that sits ON a character: in Normal
  * mode `caret.col` is 0..len-1 (0 on an empty row), never len. In Visual mode it
@@ -26,15 +44,21 @@
  * Known differences from Vim (all in rarely-typed corners):
  *  - a counted `aw` / `aW` (`d3aw`) that runs across a row break or an empty row
  *    can cover slightly different text;
- *  - the closing bracket of `i(` / `a(` / `%` is found by plain nesting — Vim
+ *  - the closing bracket of `iB` / `aB` / `%` is found by plain nesting — Vim
  *    also skips brackets inside quotes there;
- *  - in Visual mode, a quote or bracket object over a selection that already
- *    spans several characters grows it to cover both, where Vim has its own
- *    extend-to-the-next-level rules;
  *  - search is plain text (no regex), and `{count}%` is not supported.
+ *
+ * Known differences from the LazyVim plugins:
+ *  - flash: a find made live by `f` is not repeated by `df` (after an operator
+ *    `f` always takes a character); matches of a character find are not
+ *    highlighted; `.` does not repeat a `ds…` delete (its label was one-off);
+ *  - mini.ai: quotes pair up within a row only (mini.ai falls back to pairing
+ *    across rows when the row has none); the treesitter objects `o f c`, the tag
+ *    `t` and the prompt `?` are missing, as is snacks' indent scope `ii` / `ai`.
  */
 import {
   type FieldState,
+  type Block,
   type Line,
   type Pos,
   type Chord,
@@ -43,8 +67,11 @@ import {
   deleteRange,
   deleteRows,
   deleteColumns,
+  moveRows,
 } from './state.ts';
 import { charClass } from './codetext.ts';
+import { type AiMethod, aiSupports, findAi } from './miniai.ts';
+import { flashMatches, flashLabels } from './flash.ts';
 
 export type VimMode = 'normal' | 'visual' | 'visual-line' | 'visual-block';
 
@@ -74,6 +101,18 @@ export interface VimStatus {
   prompt: string | null;
   /** One-shot message from the last key (`Pattern not found: x`), else ''. */
   message: string;
+  /** The flash jump being typed (`s`), else null. */
+  flash: FlashView | null;
+}
+
+/** What a flash jump shows: the pattern, where it matches, and the label on each match. */
+export interface FlashView {
+  pattern: string;
+  /** Length of every match (the pattern's length). */
+  len: number;
+  matches: Pos[];
+  /** A label sits on the cell right after its match; pressing it jumps to the match. */
+  labels: { line: number; col: number; label: string }[];
 }
 
 // ── internal types ───────────────────────────────────────────────────────────
@@ -127,29 +166,43 @@ type Range =
 type Change =
   | { t: 'motion'; m: MotionCmd; count: number | null }
   | { t: 'lines'; count: number }
-  | { t: 'object'; around: boolean; obj: string; count: number }
+  | { t: 'object'; around: boolean; obj: string; count: number; method: AiMethod }
   | { t: 'visual'; shape: 'char' | 'line' | 'block'; lines: number; width: number; eol: boolean };
+
+/** A flash jump (`s`) while its pattern is being typed. */
+interface Flash {
+  pattern: string;
+  /** Started by `dr`: the jump is where the operator will run, not its target. */
+  remote: boolean;
+  matches: Pos[];
+  labels: Map<string, Pos>;
+  /** The lowercase label each position had, so labels stay put as the pattern grows. */
+  used: Map<string, string>;
+}
 
 const NONE: VimOutcome = { deleted: null, repeatable: false };
 const MAX_COUNT = 9999;
 
-const ARROWS: Record<string, string> = { '<Left>': 'h', '<Down>': 'j', '<Up>': 'k', '<Right>': 'l' };
+const ARROWS: Record<string, string> = { '<Left>': 'h', '<Down>': 'j', '<Up>': 'k', '<Right>': 'l', '<CR>': '+' };
 
 /** Motions that complete with a single key (two-key ones — gg ge gE f F t T / ? — are handled apart). */
 const MOTION_KEYS = new Set([
   'h', 'j', 'k', 'l', 'w', 'W', 'b', 'B', 'e', 'E', '0', '^', '$', 'G', '{', '}', ';', ',', '%', 'H', 'M', 'L',
-  'n', 'N', '*', '#',
+  'n', 'N', '*', '#', '_', '-', '+', '|',
 ]);
 
+/** The character-find motions, which flash takes over (multi-row, repeat with the same key). */
+const CHAR_KEYS = new Set(['f', 'F', 't', 'T', ';', ',']);
+
 /** Normal-mode commands that take one more character in Vim; we swallow it so it can't act as a command. */
-const SWALLOW_KEYS = new Set(['r', 'm', "'", '`', '"', '@', 'z', 'Z']);
+const SWALLOW_KEYS = new Set(['r', 'm', "'", '`', '"', '@', 'z', 'Z', '[', ']']);
 
 /**
  * Scoring chord for `d{motion}` (the game's big-chord multiplier):
  * one-character motions are `char`, line-sized motions `line`, the rest `word`.
  */
 const CHAR_MOTIONS = new Set(['h', 'l']);
-const LINE_MOTIONS = new Set(['j', 'k', 'gg', 'G', 'H', 'M', 'L', '0', '^', '$', '{', '}']);
+const LINE_MOTIONS = new Set(['j', 'k', 'gg', 'G', 'H', 'M', 'L', '0', '^', '$', '{', '}', '_', '-', '+', '|', 'g_']);
 export function chordForMotion(key: string): Chord {
   return CHAR_MOTIONS.has(key) ? 'char' : LINE_MOTIONS.has(key) ? 'line' : 'word';
 }
@@ -360,10 +413,9 @@ function bckendWord(lines: Lines, p: Pos, count: number, big: boolean, eol = fal
 
 // ── brackets ─────────────────────────────────────────────────────────────────
 const BRACKET_PAIRS: Record<string, [string, string]> = {
-  '(': ['(', ')'], ')': ['(', ')'], b: ['(', ')'],
+  '(': ['(', ')'], ')': ['(', ')'],
   '[': ['[', ']'], ']': ['[', ']'],
-  '{': ['{', '}'], '}': ['{', '}'], B: ['{', '}'],
-  '<': ['<', '>'], '>': ['<', '>'],
+  '{': ['{', '}'], '}': ['{', '}'],
 };
 const PERCENT_CHARS = '()[]{}';
 
@@ -491,53 +543,6 @@ function wordObject(
   return { start, end: p, inclusive };
 }
 
-/** `i"` `a"` (and `'`, `` ` ``), within the cursor's row. Follows Vim's `current_quote`. */
-function quoteObject(ln: Line, col: number, around: boolean, q: string): Range | EmptyObject | null {
-  const next = (from: number): number => {
-    for (let c = Math.max(from, 0); c < ln.length; c++) if (ln[c].ch === q) return c;
-    return -1;
-  };
-  let open: number;
-  let close: number;
-  if (ln[col]?.ch === q) {
-    // On a quote: pair the row's quotes from the left to learn if this one opens or closes.
-    let first = 0;
-    for (;;) {
-      open = next(first);
-      if (open < 0) return null;
-      close = next(open + 1);
-      if (close < 0) return null;
-      if (open <= col && col <= close) break;
-      first = close + 1;
-    }
-  } else {
-    // The quote before the cursor opens the string; with none, take the next string on the row.
-    open = -1;
-    for (let c = col - 1; c >= 0; c--) {
-      if (ln[c].ch === q) {
-        open = c;
-        break;
-      }
-    }
-    if (open < 0) open = next(col);
-    if (open < 0) return null;
-    close = next(open + 1);
-    if (close < 0) return null;
-  }
-
-  let from = open + 1;
-  let to = close;
-  if (around) {
-    from = open;
-    to = close + 1;
-    // trailing blanks, else leading blanks
-    if (to < ln.length && isBlank(ln, to)) while (to < ln.length && isBlank(ln, to)) to++;
-    else while (from > 0 && isBlank(ln, from - 1)) from--;
-  }
-  if (to <= from) return { kind: 'empty', at: { line: 0, col: close } };
-  return { kind: 'char', start: { line: 0, col: from }, end: { line: 0, col: to } };
-}
-
 /**
  * The next block after (line, col): the first `open` that is not owed to an
  * earlier stray `close` (Vim pairs them up while scanning forward).
@@ -558,9 +563,9 @@ function nextOpen(lines: Lines, line: number, col: number, open: string, close: 
 }
 
 /**
- * `i(` `a(` and friends: the `count`-th bracket pair enclosing the cursor; may
- * span rows. When the cursor is not inside a pair, the next pair after it is
- * used (Vim 9.1).
+ * Vim's own `iB` / `aB` (the one bracket object mini.ai leaves alone): the
+ * `count`-th `{ }` pair enclosing the cursor; may span rows. When the cursor is
+ * not inside a pair, the next pair after it is used (Vim 9.1).
  */
 function bracketObject(
   lines: Lines,
@@ -600,31 +605,49 @@ function bracketObject(
   return comparePos(s, e) < 0 ? { kind: 'char', start: s, end: e } : empty;
 }
 
-function textObject(
+/** The objects mini.ai does not define, which fall through to Vim's own. */
+const BUILTIN_OBJECTS = new Set(['w', 'W', 'p', 'B']);
+
+/** `ip` / `ap`: rows between blank rows. `ap` adds the blank rows after (or, with none, before). */
+function paragraphObject(lines: Lines, row: number, around: boolean, count: number): Range | null {
+  const blank = (r: number) => lines[r].length === 0;
+  const last = lines.length - 1;
+  const groupEnd = (r: number) => {
+    let e = r;
+    while (e < last && blank(e + 1) === blank(r)) e++;
+    return e;
+  };
+  let from = row;
+  while (from > 0 && blank(from - 1) === blank(row)) from--;
+  let to = groupEnd(row);
+  let more = around ? 2 * count - 1 : count - 1; // groups still to take after the cursor's own
+  while (more > 0 && to < last) {
+    to = groupEnd(to + 1);
+    more--;
+  }
+  if (more > 0) {
+    // only `ap` on the last paragraph may come up one group short: it takes the blank rows before instead
+    if (!around || more > 1 || blank(row)) return null;
+    while (from > 0 && blank(from - 1)) from--;
+  }
+  return { kind: 'line', from, to };
+}
+
+function builtinObject(
   lines: Lines,
   pos: Pos,
   around: boolean,
   obj: string,
   count: number,
 ): Range | EmptyObject | null {
-  const onRow = (r: Range | EmptyObject | null): Range | EmptyObject | null => {
-    if (r && r.kind === 'char') {
-      r.start.line = pos.line;
-      r.end.line = pos.line;
-    } else if (r && (r.kind === 'empty' || r.kind === 'failed')) {
-      r.at.line = pos.line;
-    }
-    return r;
-  };
   if (obj === 'w' || obj === 'W') {
     // a word object is a motion from its start to its end, with the usual operator rules
     const w = wordObject(lines, pos, around, obj === 'W', count);
     if (w.failed) return { kind: 'failed', at: w.end };
     return opRange(lines, w.start, { pos: w.end, kind: w.inclusive ? 'incl' : 'excl' }) ?? { kind: 'empty', at: w.start };
   }
-  if (obj === '"' || obj === "'" || obj === '`') return onRow(quoteObject(lines[pos.line], pos.col, around, obj));
-  const pair = BRACKET_PAIRS[obj];
-  if (pair) return bracketObject(lines, pos, around, pair[0], pair[1], count);
+  if (obj === 'p') return paragraphObject(lines, pos.line, around, count);
+  if (obj === 'B') return bracketObject(lines, pos, around, '{', '}', count);
   return null;
 }
 
@@ -738,10 +761,22 @@ export class Vim {
   private count1 = ''; // count before the operator
   private count2 = ''; // count after the operator
   private op: string | null = null; // pending operator key: 'd' or 'c'
-  private wait: 'g' | 'find' | 'object' | 'swallow' | null = null; // a key that needs one more key
-  private waitKey = ''; // which find (f F t T) / which object prefix (i a)
+  // a key that needs one more key: g · f F t T · i a · in il an al · g[ g] · a swallowed prefix
+  private wait: 'g' | 'find' | 'object' | 'object-id' | 'edge' | 'swallow' | null = null;
+  private waitKey = ''; // which find (f F t T) / which object prefix (i a) / which edge ([ ])
+  private waitMethod: AiMethod = 'cover_or_next'; // `in(` → next, `il(` → prev
   private keys = ''; // everything typed so far, for the statusline
   private prompt: { dir: 1 | -1; text: string } | null = null; // `/` `?` pattern being typed
+  private flash: Flash | null = null; // `s` jump being typed
+  /** `dr`: the operator now runs at a flash target; afterwards the cursor returns to this cell. */
+  private remote: { block: Block | null; pos: Pos } | null = null;
+  /**
+   * flash keeps a character find "live" until another key is pressed: while it
+   * is, the same key repeats it (`f` → next, `F` → previous). `charWas` is the
+   * state the current key started with.
+   */
+  private charLive = false;
+  private charWas = false;
 
   // memory across commands
   private lastSearch: SearchPattern | null = null;
@@ -756,6 +791,8 @@ export class Vim {
     this.mode = 'normal';
     this.goal = 0;
     this.message = '';
+    this.remote = null;
+    this.charLive = false;
     this.clearPending();
   }
 
@@ -766,6 +803,16 @@ export class Vim {
       operator: this.op !== null,
       prompt: this.prompt ? (this.prompt.dir === 1 ? '/' : '?') + this.prompt.text : null,
       message: this.message,
+      flash: this.flash && {
+        pattern: this.flash.pattern,
+        len: this.flash.pattern.length,
+        matches: this.flash.matches,
+        labels: [...this.flash.labels].map(([label, m]) => ({
+          line: m.line,
+          col: m.col + this.flash!.pattern.length,
+          label,
+        })),
+      },
     };
   }
 
@@ -804,7 +851,11 @@ export class Vim {
       this.clampCaret(field);
       this.goal = field.caret.col;
     }
+    this.charWas = this.charLive;
+    this.charLive = false;
     const outcome = this.handle(field, key);
+    // `dr`: once the remote command has run (or was cancelled), go back to where it was typed
+    if (this.remote && this.op === null) this.leaveRemote(field);
     this.seen = { ...field.caret };
     return outcome;
   }
@@ -812,6 +863,7 @@ export class Vim {
   private handle(field: FieldState, key: string): VimOutcome {
     this.message = '';
     if (this.prompt) return this.promptKey(field, key);
+    if (this.flash) return this.flashKey(field, key);
 
     if (key === '<Esc>') {
       this.clearPending();
@@ -829,11 +881,23 @@ export class Vim {
       }
       this.keys += key;
       if (wait === 'find') return this.runMotion(field, { key: this.waitKey, arg: key }, false);
-      if (wait === 'object') return this.runObject(field, this.waitKey === 'a', key);
+      if (wait === 'object' && (key === 'n' || key === 'l')) {
+        // mini.ai: `in(` / `il(` — the next / last object instead of the one around the cursor
+        this.wait = 'object-id';
+        this.waitMethod = key === 'n' ? 'next' : 'prev';
+        return NONE;
+      }
+      if (wait === 'object') return this.runObject(field, this.waitKey === 'a', key, 'cover_or_next');
+      if (wait === 'object-id') return this.runObject(field, this.waitKey === 'a', key, this.waitMethod);
+      if (wait === 'edge') return this.runMotion(field, { key: `g${this.waitKey}`, arg: key }, false);
       // wait === 'g'
-      if (key === 'g') return this.runMotion(field, { key: 'gg' }, false);
-      if (key === 'e') return this.runMotion(field, { key: 'ge' }, false);
-      if (key === 'E') return this.runMotion(field, { key: 'gE' }, false);
+      if ('geEjk_'.includes(key)) return this.runMotion(field, { key: key === 'g' ? 'gg' : `g${key}` }, false);
+      if (key === '[' || key === ']') {
+        // mini.ai: `g[(` / `g](` — to the left / right edge of an object
+        this.wait = 'edge';
+        this.waitKey = key;
+        return NONE;
+      }
       this.clearPending();
       return NONE;
     }
@@ -844,8 +908,12 @@ export class Vim {
       if (this.op) this.count2 += key;
       else this.count1 += key;
       this.keys += key;
+      this.charLive = this.charWas; // a count does not end a live character find
       return NONE;
     }
+
+    // LazyVim: Alt-j / Alt-k move the row (Normal) or the selected rows (Visual) down / up.
+    if (key === '<A-j>' || key === '<A-k>') return this.moveLines(field, key === '<A-j>' ? 1 : -1);
 
     const k = ARROWS[key] ?? key;
     const single = this.keys === ''; // nothing typed before this key
@@ -856,14 +924,16 @@ export class Vim {
         case 'd':
         case 'x':
         case 'c':
-        case 's':
         case '<Del>':
           return this.deleteVisual(field, 'plain');
         case 'X': // linewise, except in a block, where it deletes the block
           return this.deleteVisual(field, this.mode === 'visual-block' ? 'plain' : 'lines');
-        case 'S':
+        case 's': // LazyVim: flash jump, which extends the selection
+          return this.startFlash(false);
+        case 'S': // LazyVim: flash's treesitter pickers — there is no syntax tree here
         case 'R':
-          return this.deleteVisual(field, 'lines');
+          this.clearPending();
+          return NONE;
         case 'D':
         case 'C':
           return this.deleteVisual(field, this.mode === 'visual-block' ? 'eol' : 'lines');
@@ -902,16 +972,18 @@ export class Vim {
     } else if (!this.op) {
       switch (k) {
         case 'x':
-        case 's':
         case '<Del>':
           return this.finish(this.opMotion(field, { key: 'l' }, this.takeCount()));
+        case 's': // LazyVim: flash jump
+          return this.startFlash(false);
+        case 'S': // LazyVim: flash treesitter — no syntax tree here, so it does nothing
+          this.clearPending();
+          return NONE;
         case 'X':
           return this.finish(this.opMotion(field, { key: 'h' }, this.takeCount()));
         case 'D':
         case 'C':
           return this.finish(this.opMotion(field, { key: '$' }, this.takeCount()));
-        case 'S':
-          return this.finish(this.opLines(field, this.takeCount() ?? 1));
         case 'd':
         case 'c':
           this.op = k;
@@ -930,6 +1002,8 @@ export class Vim {
     } else {
       // operator pending
       if (k === this.op) return this.finish(this.opLines(field, this.takeCount() ?? 1)); // dd / cc
+      // LazyVim: `ds…` deletes up to a flash target; `dr…` runs the delete at one and comes back
+      if (k === 's' || (k === 'r' && !this.remote)) return this.startFlash(k === 'r');
       if (k === 'i' || k === 'a') {
         this.wait = 'object';
         this.waitKey = k;
@@ -945,6 +1019,10 @@ export class Vim {
       return NONE;
     }
     if (k === 'f' || k === 'F' || k === 't' || k === 'T') {
+      // flash: while the last find is live, its own key repeats it — lowercase onward, capital back
+      if (this.charWas && !this.op && this.lastFind && this.lastFind.key.toLowerCase() === k.toLowerCase()) {
+        return this.runMotion(field, { key: k === k.toLowerCase() ? ';' : ',' }, single);
+      }
       this.wait = 'find';
       this.waitKey = k;
       this.keys += k;
@@ -976,6 +1054,7 @@ export class Vim {
     this.waitKey = '';
     this.keys = '';
     this.prompt = null;
+    this.flash = null;
   }
 
   /** The command's count (counts before and after the operator multiply), or null when none was typed. */
@@ -1042,10 +1121,12 @@ export class Vim {
   private runMotion(field: FieldState, m: MotionCmd, single: boolean): VimOutcome {
     const count = this.takeCount();
     const pendingOp = this.op !== null;
-    if (m.arg !== undefined) this.lastFind = { key: m.key, ch: m.arg };
+    const charFind = CHAR_KEYS.has(m.key);
+    if (charFind && m.arg !== undefined) this.lastFind = { key: m.key, ch: m.arg };
     if (pendingOp) return this.finish(this.opMotion(field, m, count));
 
     this.clearPending();
+    if (charFind) this.charLive = true; // flash: the same key now repeats the find
     const t = this.motion(field, m, count, false);
     if (!t) return NONE;
     this.moveTo(field, t);
@@ -1082,12 +1163,32 @@ export class Vim {
         const max = op || visual ? ln.length : maxCol(ln); // `dl` on the last character deletes it
         return cur.col >= max && !op ? null : at(cur.line, Math.min(max, cur.col + n), 'excl');
       }
+      // gj / gk are what LazyVim's j / k run without a count; with no wrapped rows they move the
+      // same way, but as an operator target they are characterwise.
       case 'j':
-      case 'k': {
-        const line = m.key === 'j' ? Math.min(last, cur.line + n) : Math.max(0, cur.line - n);
+      case 'k':
+      case 'gj':
+      case 'gk': {
+        const line = m.key.endsWith('j') ? Math.min(last, cur.line + n) : Math.max(0, cur.line - n);
         if (line === cur.line) return null;
         const col = Math.min(this.goal, this.lastCol(lines[line]));
-        return { pos: { line, col }, kind: 'line', keepGoal: true };
+        return { pos: { line, col }, kind: m.key.length === 1 ? 'line' : 'excl', keepGoal: true };
+      }
+      case '_':
+      case '+':
+      case '-': {
+        // first non-blank of this row (`_`), or of the row n below / above
+        const line = cur.line + (m.key === '-' ? -n : m.key === '+' ? n : n - 1);
+        return line < 0 || line > last ? null : toRow(line);
+      }
+      case '|':
+        return at(cur.line, Math.min(n - 1, ln.length), 'excl');
+      case 'g_': {
+        const line = cur.line + n - 1;
+        if (line > last) return null;
+        let c = lines[line].length - 1;
+        while (c > 0 && isBlank(lines[line], c)) c--;
+        return at(line, Math.max(c, 0), 'incl');
       }
       case '0':
         return at(cur.line, 0, 'excl');
@@ -1164,14 +1265,14 @@ export class Vim {
       case 'F':
       case 't':
       case 'T':
-        return m.arg === undefined ? null : this.findChar(cur, ln, m.key, m.arg, n, false);
+        return m.arg === undefined ? null : charMotion(lines, cur, m.key, m.arg, n, false, true);
       case ';':
-      case ',': {
+      case ',':
         if (!this.lastFind) return null;
-        let key = this.lastFind.key;
-        if (m.key === ',') key = key === key.toLowerCase() ? key.toUpperCase() : key.toLowerCase();
-        return this.findChar(cur, ln, key, this.lastFind.ch, n, true);
-      }
+        return charMotion(lines, cur, this.lastFind.key, this.lastFind.ch, n, m.key === ',', false);
+      case 'g[':
+      case 'g]':
+        return m.arg === undefined ? null : this.edgeMotion(field, m.key === 'g[', m.arg, n);
 
       case '%': {
         if (count !== null) return null; // N% (go to percentage) is not supported
@@ -1195,7 +1296,8 @@ export class Vim {
           return null;
         }
         if (m.search) this.lastSearch = { ...m.search }; // `.` re-running `d/foo` makes it the last search again
-        const dir = m.key === 'N' ? (pat.dir === 1 ? -1 : 1) : pat.dir;
+        // LazyVim: `n` always goes forward and `N` backward, whichever way the search was typed
+        const dir = m.key === 'n' ? 1 : m.key === 'N' ? -1 : pat.dir;
         const hit = findMatch(lines, cur, pat, dir, n);
         if (!hit) {
           this.message = `Pattern not found: ${pat.text}`;
@@ -1217,19 +1319,129 @@ export class Vim {
     return null;
   }
 
-  /** f / F / t / T on the cursor's row. `again` = a `;` / `,` repeat, where t / T step past an adjacent match. */
-  private findChar(cur: Pos, ln: Line, key: string, ch: string, n: number, again: boolean): Target | null {
-    const dir = key === 'f' || key === 't' ? 1 : -1;
-    const till = key === 't' || key === 'T';
-    let c = cur.col;
-    if (again && till && n === 1) c += dir;
-    for (let i = 0; i < n; i++) {
-      do c += dir;
-      while (c >= 0 && c < ln.length && ln[c].ch !== ch);
-      if (c < 0 || c >= ln.length) return null;
+  /** The Visual selection's two ends in reading order — or the cursor alone in Normal mode. */
+  private reference(field: FieldState): [Pos, Pos | null] {
+    if (this.mode === 'normal') return [field.caret, null];
+    return comparePos(this.anchor, field.caret) <= 0 ? [this.anchor, field.caret] : [field.caret, this.anchor];
+  }
+
+  /** mini.ai `g[` / `g]`: the left / right edge of the `a` object; already there, the next one out. */
+  private edgeMotion(field: FieldState, left: boolean, id: string, n: number): Target | null {
+    const [s, e] = this.reference(field);
+    const edge = (times: number): Pos | null => {
+      const r = findAi(field.lines, s, e, 'a', id, times, 'cover_or_next');
+      if (!r) return null;
+      if ('empty' in r) return r.empty;
+      return left ? r.start : lastCell(field.lines, r.end);
+    };
+    let pos = edge(1);
+    if (!pos) return null;
+    const times = comparePos(pos, field.caret) === 0 ? n + 1 : n;
+    if (times > 1) pos = edge(times);
+    return pos && { pos, kind: 'excl' };
+  }
+
+  // ── flash jump (`s`, and `r` after an operator) ────────────────────────────
+  private startFlash(remote: boolean): VimOutcome {
+    this.flash = { pattern: '', remote, matches: [], labels: new Map(), used: new Map() };
+    this.wait = null;
+    this.keys += remote ? 'r' : 's';
+    return NONE;
+  }
+
+  /** A key while the flash pattern is being typed: a label jumps, anything else extends the pattern. */
+  private flashKey(field: FieldState, key: string): VimOutcome {
+    const fl = this.flash!;
+    if (key === '<CR>') {
+      // the first match after the cursor (wrapping), as flash's "current" target
+      const next = fl.matches.find((m) => comparePos(m, field.caret) > 0) ?? fl.matches[0];
+      if (next) return this.flashJump(field, next);
     }
-    if (till) c -= dir;
-    return { pos: { line: cur.line, col: c }, kind: dir === 1 ? 'incl' : 'excl' };
+    if (key === '<BS>' && fl.pattern !== '') {
+      fl.pattern = fl.pattern.slice(0, -1);
+      this.flashUpdate(field);
+      return NONE;
+    }
+    if (key.length !== 1) {
+      this.clearPending(); // Esc, or a key that is neither a label nor text
+      return NONE;
+    }
+    const hit = fl.labels.get(key);
+    if (hit) return this.flashJump(field, hit);
+    fl.pattern += key;
+    this.flashUpdate(field);
+    if (fl.matches.length === 0) {
+      this.message = `No match: ${fl.pattern}`;
+      this.clearPending();
+    }
+    return NONE;
+  }
+
+  private flashUpdate(field: FieldState): void {
+    const fl = this.flash!;
+    fl.matches = flashMatches(field.lines, fl.pattern);
+    fl.labels = flashLabels(field.lines, fl.matches, fl.pattern.length, field.caret, fl.used);
+  }
+
+  private flashJump(field: FieldState, pos: Pos): VimOutcome {
+    const remote = this.flash!.remote;
+    this.flash = null;
+    if (this.op && remote) {
+      // `dr`: go there and keep the operator waiting for its motion / object
+      const cur = field.caret;
+      this.remote = { block: field.lines[cur.line][cur.col] ?? null, pos: { ...cur } };
+      this.count1 = '';
+      this.count2 = '';
+      this.keys = `${this.op}r`;
+      this.moveTo(field, { pos, kind: 'excl' });
+      return NONE;
+    }
+    if (this.op) {
+      // `ds`: from the cursor up to and including the first character of the match (flash's default)
+      const range = opRange(field.lines, field.caret, { pos, kind: 'incl' });
+      this.lastChange = null; // labels are one-off, so `.` has nothing to repeat
+      return this.finish(range && this.remove(field, range, 'word'));
+    }
+    this.clearPending();
+    this.moveTo(field, { pos, kind: 'excl' });
+    return NONE;
+  }
+
+  /** After a `dr` command: back to the cell it was typed on (found again by identity — rows may have shifted). */
+  private leaveRemote(field: FieldState): void {
+    const { block, pos } = this.remote!;
+    this.remote = null;
+    let back: Pos = pos;
+    if (block) {
+      for (let l = 0; l < field.lines.length; l++) {
+        const c = field.lines[l].indexOf(block);
+        if (c >= 0) back = { line: l, col: c };
+      }
+    }
+    field.caret = { ...back };
+    this.clampCaret(field);
+    this.goal = field.caret.col;
+  }
+
+  // ── row moves (LazyVim Alt-j / Alt-k) ──────────────────────────────────────
+  /** Move the cursor's row — or, in Visual, every selected row — `count` rows down / up. Deletes nothing. */
+  private moveLines(field: FieldState, dir: -1 | 1): VimOutcome {
+    const count = this.takeCount();
+    const pendingOp = this.op !== null;
+    this.clearPending();
+    if (pendingOp) return NONE; // not something an operator can act on
+    const visual = this.mode !== 'normal';
+    let moved = 0;
+    for (let i = 0; i < (count ?? 1); i++) {
+      // `moveRows` moves the rows of `field.select`; lend it the Visual selection for the call
+      if (visual) field.select = { anchor: { ...this.anchor }, head: { ...field.caret } };
+      const ok = moveRows(field, dir);
+      field.select = null;
+      if (!ok) break;
+      if (visual) this.anchor = { ...this.anchor, line: this.anchor.line + dir };
+      moved++;
+    }
+    return { deleted: null, repeatable: moved > 0 && count === null };
   }
 
   // ── deletes ────────────────────────────────────────────────────────────────
@@ -1257,34 +1469,38 @@ export class Vim {
   }
 
   /** `i` / `a` + object key completed: delete it (operator pending) or select it (Visual). */
-  private runObject(field: FieldState, around: boolean, obj: string): VimOutcome {
+  private runObject(field: FieldState, around: boolean, obj: string, method: AiMethod): VimOutcome {
     const count = this.takeCount() ?? 1;
-    const pendingOp = this.op !== null;
+    if (this.op !== null) return this.finish(this.opObject(field, around, obj, count, method));
     this.clearPending();
-    if (pendingOp) {
-      const deleted = this.opObject(field, around, obj, count);
-      return deleted ? { deleted, repeatable: false } : NONE;
-    }
 
     // Visual: select the object, or grow the selection to cover it.
     const lines = field.lines;
     const empty = comparePos(this.anchor, field.caret) === 0;
-    if (obj === 'w' || obj === 'W') {
+    if (!BUILTIN_OBJECTS.has(obj)) {
+      // mini.ai: the selection becomes the object (an object equal to the selection steps outward)
+      if (!aiSupports(obj)) return NONE;
+      const [s, e] = this.reference(field);
+      const r = findAi(lines, s, e, around ? 'a' : 'i', obj, count, method);
+      if (!r) {
+        this.exitVisual(field); // as mini.ai does when there is no such object
+        return NONE;
+      }
+      this.anchor = 'empty' in r ? { ...r.empty } : { ...r.start };
+      field.caret = 'empty' in r ? { ...r.empty } : lastCell(lines, r.end);
+    } else if (obj === 'w' || obj === 'W') {
       const w = wordObject(lines, field.caret, around, obj === 'W', count, empty ? null : this.anchor);
       field.caret = { ...w.end };
       if (!w.failed) this.anchor = { ...w.start };
       if (this.mode === 'visual-line') this.mode = 'visual';
     } else {
-      const range = textObject(lines, field.caret, around, obj, count);
+      const range = builtinObject(lines, field.caret, around, obj, count);
       if (!range || range.kind === 'empty' || range.kind === 'failed') return NONE;
       let s: Pos;
       let e: Pos; // inclusive
       if (range.kind === 'char') {
         s = range.start;
-        e =
-          range.end.col > 0
-            ? { line: range.end.line, col: range.end.col - 1 }
-            : { line: range.end.line - 1, col: lines[range.end.line - 1].length };
+        e = lastCell(lines, range.end);
       } else if (range.kind === 'line') {
         s = { line: range.from, col: 0 };
         e = { line: range.to, col: lines[range.to].length };
@@ -1292,12 +1508,11 @@ export class Vim {
         return NONE;
       }
       if (!empty) {
-        const [a, h] = comparePos(this.anchor, field.caret) <= 0 ? [this.anchor, field.caret] : [field.caret, this.anchor];
+        const [a, h] = this.reference(field) as [Pos, Pos];
         if (comparePos(a, s) < 0) s = a;
         if (comparePos(h, e) > 0) e = h;
       }
-      const bracket = obj !== '"' && obj !== "'" && obj !== '`';
-      if (bracket || this.mode === 'visual-line') this.mode = 'visual';
+      this.mode = obj === 'p' ? 'visual-line' : 'visual';
       this.anchor = { ...s };
       field.caret = { ...e };
     }
@@ -1306,10 +1521,29 @@ export class Vim {
     return NONE;
   }
 
-  private opObject(field: FieldState, around: boolean, obj: string, count: number): DeleteResult | null {
-    const range = textObject(field.lines, field.caret, around, obj, count);
+  private opObject(
+    field: FieldState,
+    around: boolean,
+    obj: string,
+    count: number,
+    method: AiMethod,
+  ): DeleteResult | null {
+    if (!BUILTIN_OBJECTS.has(obj)) {
+      const r = findAi(field.lines, field.caret, null, around ? 'a' : 'i', obj, count, method);
+      if (!r) return null;
+      this.lastChange = { t: 'object', around, obj, count, method };
+      if ('empty' in r) {
+        // nothing to delete (`di(` on `()`) — the cursor still goes there
+        field.caret = { ...r.empty };
+        this.clampCaret(field);
+        this.goal = field.caret.col;
+        return null;
+      }
+      return this.remove(field, { kind: 'char', start: r.start, end: r.end }, obj === 'g' ? 'line' : 'word');
+    }
+    const range = builtinObject(field.lines, field.caret, around, obj, count);
     if (!range) return null;
-    if (range.kind !== 'failed') this.lastChange = { t: 'object', around, obj, count };
+    if (range.kind !== 'failed') this.lastChange = { t: 'object', around, obj, count, method };
     if (range.kind === 'empty' || range.kind === 'failed') {
       // nothing to delete — like Vim, the cursor still goes there
       field.caret = { ...range.at };
@@ -1317,7 +1551,7 @@ export class Vim {
       this.goal = field.caret.col;
       return null;
     }
-    return this.remove(field, range as Range, 'word');
+    return this.remove(field, range as Range, obj === 'p' ? 'line' : 'word');
   }
 
   /** Delete the Visual selection. `lines` = whole rows (X), `eol` = block to the end of every row (block D). */
@@ -1362,7 +1596,7 @@ export class Vim {
       case 'lines':
         return this.opLines(field, count ?? c.count);
       case 'object':
-        return this.opObject(field, c.around, c.obj, count ?? c.count);
+        return this.opObject(field, c.around, c.obj, count ?? c.count, c.method);
       case 'visual': {
         // The same amount of text as the selection had, measured from the cursor.
         const lines = field.lines;
@@ -1412,4 +1646,62 @@ function charSpan(lines: Lines, s: Pos, e: Pos): Range {
   if (e.col >= len) end = e.line < lines.length - 1 ? { line: e.line + 1, col: 0 } : { line: e.line, col: len };
   else end = { line: e.line, col: e.col + 1 };
   return { kind: 'char', start: { ...s }, end };
+}
+
+/** The last cell of a half-open range ending at `end` — the end-of-row position when it stops at a row break. */
+function lastCell(lines: Lines, end: Pos): Pos {
+  if (end.col > 0) return { line: end.line, col: end.col - 1 };
+  return end.line > 0 ? { line: end.line - 1, col: lines[end.line - 1].length } : { ...end };
+}
+
+/**
+ * f / F / t / T the way flash.nvim runs them: across rows (no wrap-around), and
+ * — with LazyVim's `ignorecase` + `smartcase` — a lowercase character also finds
+ * its capital. The targets are the character itself (f F), the cell before it
+ * (t) or the cell after it (T), on its own row. `reverse` = `,`, which walks the
+ * same targets the other way. `fresh` = typed with its character: then t / T
+ * count a target under the cursor, so `tx` right before an `x` stays put.
+ */
+function charMotion(
+  lines: Lines,
+  cur: Pos,
+  motion: string,
+  ch: string,
+  n: number,
+  reverse: boolean,
+  fresh: boolean,
+): Target | null {
+  const fold = ch === ch.toLowerCase();
+  const is = (ln: Line, c: number) => c >= 0 && c < ln.length && (fold ? ln[c].ch.toLowerCase() : ln[c].ch) === ch;
+  const till = motion === 't' || motion === 'T';
+  const target = (p: Pos): boolean => {
+    const ln = lines[p.line];
+    if (p.col >= ln.length) return false;
+    return motion === 't' ? is(ln, p.col + 1) : motion === 'T' ? is(ln, p.col - 1) : is(ln, p.col);
+  };
+  const forward = (motion === 'f' || motion === 't') !== reverse;
+  const p = { ...cur };
+  let left = n;
+  if (fresh && till && target(p)) left--;
+  while (left > 0) {
+    // one cell on, skipping row ends
+    if (forward) {
+      if (p.col + 1 < lines[p.line].length) p.col++;
+      else {
+        do p.line++;
+        while (p.line < lines.length && lines[p.line].length === 0);
+        if (p.line >= lines.length) return null;
+        p.col = 0;
+      }
+    } else if (p.col > 0 && lines[p.line].length > 0) {
+      p.col = Math.min(p.col, lines[p.line].length) - 1;
+    } else {
+      do p.line--;
+      while (p.line >= 0 && lines[p.line].length === 0);
+      if (p.line < 0) return null;
+      p.col = lines[p.line].length - 1;
+    }
+    if (target(p)) left--;
+  }
+  return { pos: p, kind: motion === 'f' || motion === 't' ? 'incl' : 'excl' };
 }

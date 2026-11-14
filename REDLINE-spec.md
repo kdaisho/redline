@@ -33,7 +33,7 @@ in every mode; only the keys differ.
 | Mode | Keys |
 |---|---|
 | **Standard** | macOS editor chords + shift-selection (below) |
-| **Vim** | modal, delete-only Vim (below) |
+| **Vim** | modal, delete-only Vim with LazyVim's keybindings (below) |
 
 - The start screen has a mode picker: press the mode's number (`1`, `2`, …) or
   `Tab` to switch. The choice is remembered (localStorage `redline.mode`).
@@ -90,54 +90,136 @@ selected rows, up/down) — layout only, deletes nothing.
 
 For Alt-movement / Alt-selection / Alt-deletion, a **"word boundary"** is whitespace, not color — a contiguous red+blue run (no space between them) counts as one word. Color-touching deletes may therefore cross into blue and count as a mistake (spec §3).
 
-### Vim mode — modal, delete-only
+### Vim mode — modal, delete-only, LazyVim keys
 
 Real Vim semantics over the same field, limited to what the game needs: moving
-and deleting. The engine (`vim.ts`) is a pure module; its word motions, operator
-ranges and text objects follow Vim's own algorithms and were checked against the
-`vim` binary.
+and deleting. The engine (`vim.ts`) is a pure module; its word motions and
+operator ranges follow Vim's own algorithms and were checked against the `vim`
+binary. Where LazyVim's defaults differ from stock Vim, LazyVim wins (see
+"LazyVim keybindings" below, and `docs/lazyvim-keymap-audit.md` for every
+binding).
 
 - **Modes:** Normal, Visual (`v`), Visual Line (`V`), Visual Block (`Ctrl-v`).
   `Esc` / `Ctrl-[` / `Ctrl-c` return to Normal and cancel a half-typed command.
 - **Cursor:** a block ON a character (column 0..len-1). In Visual it may also rest
   on the end-of-row position, which selects the row break. Half-height while an
   operator waits for its motion.
-- **Statusline** (under the editor frame): the mode, or the search prompt, or a
-  message, on the left; the half-typed command (`d2`, `df`) on the right.
+- **Statusline** (under the editor frame): the mode, or the search prompt, or the
+  flash text (`flash: fo█`), or a message, on the left; the half-typed command
+  (`d2`, `df`, `ds`) on the right.
 - **Words:** identifier characters (`A-Z a-z 0-9 _`) vs punctuation, separated by
   whitespace — `charClass`, the same classes the board generator uses, so each
   Vim word is a single color. WORDS (`W B E`) are split by whitespace only.
 
 | Keys | Action |
 |---|---|
-| `h j k l` (arrows) | left / down / up / right; `j k` keep the column |
+| `h j k l` (arrows) · `gj gk` | left / down / up / right; `j k` keep the column |
 | `w b e ge` · `W B E gE` | word / WORD motions |
-| `0 ^ $` | row start / first non-blank / row end |
-| `gg G {n}G` · `H M L` | first / last / n-th row · top / middle / bottom row of the field |
+| `0 ^ $` · `_ g_` · `{n}\|` | row start / first non-blank / row end · first / last non-blank · column n |
+| `gg G {n}G` · `H M L` · `- + Enter` | first / last / n-th row · top / middle / bottom row of the field · first non-blank of the row above / below |
 | `{ }` | previous / next blank row |
-| `f F t T {char}` · `; ,` | find in row · repeat / reverse |
+| `f F t T {char}` · `; ,` | find a character (flash: across rows, see below) · repeat / reverse |
+| `s{text}{label}` | flash jump (see below) |
+| `Alt-j` `Alt-k` | move the row — in Visual, the selected rows — down / up (takes a count) |
 | `%` | matching `( ) [ ] { }` |
-| `/text` `?text` `Enter` · `n N` · `* #` | search (plain text, wraps) · next / previous · word under cursor |
+| `/text` `?text` `Enter` · `n N` · `* #` | search (plain text, wraps) · next forward / backward · word under cursor |
 | `x X Del` · `D` · `dd` | delete character / to row end / whole row |
 | `d{motion}` · `d{text object}` | delete over a motion or object |
-| `iw aw iW aW` · `i" a" i' a'` `` i` a` `` · `i( a( i[ a[ i{ a{ i< a<` | text objects (also `) ] } > b B`) |
+| `iw aw iW aW ip ap iB aB` | Vim's own text objects: word, WORD, paragraph, `{ }` block |
+| `i( a( i[ a[ i{ a{ i< a<` (and `) ] } >`) · `ib ab` · `i" a" i' a'` `` i` a` `` · `iq aq` · `ia aa` · `iu au iU aU` · `id` · `ie` · `ig ag` · `i_ a_` … | mini.ai text objects (see below) |
+| `in( il( an( al(` … · `g[(` `g](` … | the next / last object · jump to an object's left / right edge |
 | counts | `3w` `5dd` `d2w` `2d3w` `4x` `3.` |
 | `.` | repeat the last delete command |
-| Visual: `d x Del` · `X` · `D` · `o O` | delete selection · selected rows · rows / block to row ends · other end |
+| Visual: `d x Del` · `X` · `D` · `o O` · `s` | delete selection · selected rows · rows / block to row ends · other end · flash jump extends it |
 
 Rules that follow Vim: `dw` on the last word of a row stops at the row end; `de`
 is inclusive, `dw` / `db` exclusive; `dd`, `dj`, `dG` … are linewise and **remove
 the rows**; a charwise delete across rows joins them; `daw` takes the trailing
-space (or the leading one at the end of a row); bracket objects outside any pair
-use the next pair (Vim 9.1). A command that fails deletes nothing.
+space (or the leading one at the end of a row). A command that fails deletes
+nothing.
+
+#### LazyVim keybindings (#9)
+
+Vim mode follows LazyVim's default keymaps and the editing plugins it ships
+(flash.nvim, mini.ai) wherever they make sense in a single-buffer, delete-only
+game. `docs/lazyvim-keymap-audit.md` lists every LazyVim binding as supported,
+not applicable or deferred.
+
+**flash.nvim — `s` jump.** `s` then some text: every match of the text on the
+board gets a one-letter label on the cell right after it (the board dims, matches
+stay lit). Pressing a label moves the cursor to the start of that match. The text
+can keep growing — a label is never a character that could continue it — and a
+match keeps its label while it does. Search is plain text and smartcase.
+`Enter` jumps to the next match, `Backspace` edits, `Esc` cancels; text with no
+match cancels too. Labels: `asdfghjklqwertyuiopzxcvbnm` nearest-first, then
+capitals.
+- After an operator the jump is its target: `ds{text}{label}` deletes from the
+  cursor **through the first character of the match** (flash's default is
+  inclusive), in either direction.
+- `dr{text}{label}` is *remote*: the cursor goes to the match, the operator waits
+  there for a motion or object (`driw`-style: `dr` · text · label · `iw`), and
+  the cursor then returns to the character it was on.
+- In Visual mode `s` extends the selection to the match.
+- Because `s` is flash, it is **not** a delete (`x` is). `S`, `R` and
+  `Ctrl-Space` are flash's treesitter pickers in LazyVim — the field has no syntax
+  tree, so they do nothing (and `S` is no longer `dd`).
+
+**flash.nvim — `f F t T`.** They search across rows (no wrap-around), and a
+lowercase character also finds its capital (LazyVim sets `ignorecase` +
+`smartcase`). While a find is *live* — until any other key is pressed — the same
+key repeats it: `f` (or `t`) goes on to the next match, `F` (or `T`) back to the
+previous one. So `fa` `fb` is "next `a`, then `b`": press another key (or `Esc`)
+before finding a different character. `;` and `,` repeat as well; `,` walks the
+same targets backward. After an operator `f` always takes a character.
+
+**mini.ai text objects.** Every `i` / `a` object except `w W p B` is mini.ai's,
+with mini.ai's rules rather than Vim's:
+
+| Object | `a` | `i` |
+|---|---|---|
+| `( [ { <` | the brackets and everything between | between them, without the padding spaces |
+| `) ] } >` | same | everything between them |
+| `b` | any of `( )` `[ ]` `{ }` | everything between |
+| `" '` `` ` `` · `q` (any quote) | the quotes and the text — no surrounding space | the text |
+| `a` argument | the argument and one comma (the one after the first argument, else the one before) | the argument |
+| `u` call · `U` call without dots in the name | `name(…)` | inside the `( )` |
+| `d` digits · `e` camelCase / snake_case part | the run | the same |
+| `g` field | every row | without blank rows at the top and bottom |
+| any other non-letter (`_ , . ; : =` …) | from after one to the end of the next run of them | the text between two of them |
+
+- **Which one:** the narrowest object covering the cursor; if none covers it, the
+  first one that starts after it. The cursor's row is searched before the rest of
+  the field, so `dib` on a row with `(…)` ahead takes that pair rather than a
+  `{ }` enclosing several rows. Quotes pair up from the left of their row.
+- **Next / last:** `in(` `an(` take the next object after the cursor, `il(` `al(`
+  the last one before it — for every object above.
+- **Counts** step outward (`d2a(` = the pair around the pair), or onward for
+  next / last (`d2in(`).
+- **Visual:** the selection becomes the object; the same object again takes the
+  next one out. With no such object, Visual mode ends (as in mini.ai).
+- **Edges:** `g[` / `g]` + an object move to the left / right edge of its `a`
+  form; already there, to the next one out.
+- Not available: LazyVim's treesitter objects `o` (block / loop / conditional),
+  `f` (function), `c` (class), the tag `t`, the prompt `?`, and snacks' indent
+  scope `ii` / `ai`.
+
+**Row moves.** `Alt-j` / `Alt-k` move the cursor's row down / up; in any Visual
+mode they move every selected row and keep the selection. A count moves that many
+rows. Layout only — nothing is deleted or scored. (On macOS, Option-j / Option-k.)
+
+**Remaps.** `n` always searches forward and `N` backward, whichever of `/` `?`
+`*` `#` started the search. `j` / `k` are LazyVim's `gj` / `gk` without a count —
+the same movement here, since rows never wrap. LazyVim's `[x` / `]x` pairs
+(`]d`, `[b`, `]f` …) have nothing to act on; they swallow their second key so it
+cannot run as a command. Leader (`Space`) chords do nothing.
 
 **Delete-only:** there is no Insert mode — `i a o O I A r R J ~` do nothing
-(`i` / `a` only start a text object after `d` or in Visual). `c` `s` `C` `S`
-delete exactly like `d` `x` `D` `dd`. **No undo** (`u`), no yank / put, registers,
+(`i` / `a` only start a text object after `d` or in Visual). `c` `C` delete
+exactly like `d` `D` (`s` / `S` are flash's — see above). **No undo** (`u`), no yank / put, registers,
 macros, marks, or `:` command line. Search is plain text, not regex.
 
 **Hold-to-repeat:** a motion typed as a single key repeats while held (`j`, `w`,
-`;`, `n` …). Deletes never auto-repeat, and neither does a motion with a count,
+`;`, `n`, a repeating `f`, `Alt-j` …). Deletes never auto-repeat, and neither does a motion with a count,
 an operator or a prefix.
 
 **Game keys in Vim mode:** while playing, Vim owns every typing key, including
@@ -150,12 +232,13 @@ or shape (`3dd`, a Visual Block, `.`). Chord for the big-chord multiplier (§4):
 
 | Command | Chord |
 |---|---|
-| `x X Del s`, `dh dl` | char ×1 |
-| `d` + `w b e ge W B E gE`, `f F t T ; ,`, `%`, `/ ? n N * #`; `d` + any text object | word ×1.5 |
-| `dd cc S`, `D C`, `d$ d0 d^`, `dj dk dgg dG dH dM dL`, `d{ d}` | line ×2 |
+| `x X Del`, `dh dl` | char ×1 |
+| `d` + `w b e ge W B E gE`, `f F t T ; ,`, `%`, `/ ? n N * #`, `gj gk`, `g[ g]`; `ds…` (flash jump); `d` + any text object but `p` / `g` | word ×1.5 |
+| `dd cc`, `D C`, `d$ d0 d^ d_ dg_ d\|`, `dj dk d- d+ dgg dG dH dM dL`, `d{ d}`, `dip dap dig dag` | line ×2 |
 | any Visual-mode delete | selection ×2 |
 
-`.` scores with the chord of the command it repeats.
+`.` scores with the chord of the command it repeats. A remote delete (`dr…`)
+scores as the command that runs at the target (`dr…iw` word, `dr…d` line).
 
 
 ## 3. Mistakes (game-over model)
@@ -230,11 +313,13 @@ or shape (`3dd`, a Visual Block, `.`). Chord for the big-chord multiplier (§4):
 - Modules: `state.ts` (model + caret/selection/delete ops), `modes.ts` (mode registry,
   remembered choice), `input.ts` (shared key controller: listeners, repeat handling,
   global keys), `keymaps/<mode>.ts` (one keymap per mode over the shared field actions),
-  `vim.ts` (the Vim engine — pure, no DOM), `render.ts`, `game.ts` (loop, stages,
+  `vim.ts` (the Vim engine — pure, no DOM), `flash.ts` (flash jump matching and
+  labels), `miniai.ts` (mini.ai text objects), `render.ts`, `game.ts` (loop, stages,
   scoring, strikes), `stages.ts` (board definitions), `main.ts`.
-- Tests: **vitest** (`pnpm test`), headless — `vim.test.ts` (engine) and
-  `vim-play.test.ts` (key controller wiring, and a bot clearing all 50 stages with
-  Vim keys).
+- Tests: **vitest** (`pnpm test`), headless — `vim.test.ts` (engine),
+  `vim-lazyvim.test.ts` (flash, mini.ai, row moves, LazyVim remaps, help-screen
+  fit) and `vim-play.test.ts` (key controller wiring, and a bot clearing all 50
+  stages with Vim keys).
 
 ---
 

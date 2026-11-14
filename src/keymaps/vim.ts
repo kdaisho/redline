@@ -5,7 +5,8 @@
  * means in the current mode / pending command.
  *
  * Key names: a printable key is its own character (`d`, `G`, `$`, ` `); the rest
- * are `<Esc>`, `<CR>`, `<BS>`, `<Del>`, `<C-v>`, `<Left>` `<Right>` `<Up>` `<Down>`.
+ * are `<Esc>`, `<CR>`, `<BS>`, `<Del>`, `<C-v>`, `<Left>` `<Right>` `<Up>` `<Down>`,
+ * and LazyVim's row moves `<A-j>` `<A-k>` (#9).
  *
  * While playing, Vim claims every key it names — including Enter, Space, Esc and
  * `M`, which are global keys in Standard mode. Mute and help therefore live on
@@ -33,6 +34,11 @@ export function vimKeyName(e: KeyboardEvent): string | null {
     if (k === 'v') return '<C-v>';
     if (k === '[' || k === 'c') return '<Esc>'; // Vim's other ways to press Escape
     return null;
+  }
+  if (e.altKey && !e.ctrlKey) {
+    // LazyVim's Alt-j / Alt-k. On macOS Option turns the letters into `∆` and `˚`.
+    if (e.key === 'j' || e.key === 'J' || e.key === '∆') return '<A-j>';
+    if (e.key === 'k' || e.key === 'K' || e.key === '˚') return '<A-k>';
   }
   const special = SPECIAL[e.key];
   if (special) return special;
