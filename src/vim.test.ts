@@ -2,6 +2,10 @@
  * Vim engine tests (#7) — headless, on small hand-built fields. Expected results
  * are what real Vim (9.1) does with the same text and keys; the engine was also
  * checked against the `vim` binary with a differential fuzzer during development.
+ *
+ * Since #9 the keys are LazyVim's: quote and bracket objects follow mini.ai, `s`
+ * is flash, and `n` / `N` have a fixed direction — those expectations follow the
+ * plugins, not stock Vim. The LazyVim-only features are in `vim-lazyvim.test.ts`.
  */
 import { describe, it, expect } from 'vitest';
 import { type FieldState, type Line, type DeleteResult, createField } from './state.ts';
@@ -306,12 +310,12 @@ describe('operators', () => {
     expect(run(['', 'a', 'bc'], 'd{', [2, 1]).rows).toEqual(['c']);
   });
 
-  it('c s C S delete like d x D dd', () => {
+  it('c C delete like d D; s and S belong to flash (LazyVim) and delete nothing', () => {
     expect(run(['foo bar'], 'cw').rows).toEqual(['bar']);
-    expect(run(['foo bar'], 's').rows).toEqual(['oo bar']);
     expect(run(['foo bar'], 'C', [0, 3]).rows).toEqual(['foo']);
     expect(run(['a', 'b'], 'cc').rows).toEqual(['b']);
-    expect(run(['a', 'b'], 'S').rows).toEqual(['b']);
+    expect(run(['foo bar'], 's').rows).toEqual(['foo bar']);
+    expect(run(['a', 'b'], 'S').rows).toEqual(['a', 'b']);
     expect(run(['a', 'b'], 'dc').rows).toEqual(['a', 'b']); // mixed operators cancel
   });
 
@@ -325,7 +329,7 @@ describe('operators', () => {
 
   it('insert-ish and unsupported keys do nothing', () => {
     const rows = ['foo bar', 'baz'];
-    for (const keys of ['i', 'a', 'o', 'O', 'I', 'A', 'u', 'p', 'P', 'y', 'J', '~', '<CR>', '<BS>']) {
+    for (const keys of ['i', 'a', 'o', 'O', 'I', 'A', 'u', 'p', 'P', 'y', 'J', '~', '<BS>', ' ', 'K']) {
       const r = run(rows, keys, [0, 2]);
       expect(r.rows, keys).toEqual(rows);
       expect(r.at, keys).toEqual([0, 2]);
@@ -382,8 +386,8 @@ describe('text objects', () => {
     expect(run(rows, 'di"', [0, 3]).rows).toEqual(['on("", fn)']); // on the opening quote
     expect(run(rows, 'di"', [0, 9]).rows).toEqual(['on("", fn)']); // on the closing quote
     expect(run(rows, 'di"').rows).toEqual(['on("", fn)']); // before it: the next string on the row
-    expect(run(["a 'b' c"], "da'", [0, 3]).rows).toEqual(['a c']); // a' takes the trailing space
-    expect(run(["a 'b'"], "da'", [0, 3]).rows).toEqual(['a']); // …or the leading one
+    expect(run(["a 'b' c"], "da'", [0, 3]).rows).toEqual(['a  c']); // mini.ai: just the quotes, no space
+    expect(run(["a 'b'"], "da'", [0, 3]).rows).toEqual(['a ']);
     expect(run(['a `b` c'], 'di`', [0, 3]).rows).toEqual(['a `` c']);
     expect(run(['no quotes'], 'di"').deletes).toEqual([]);
   });
@@ -408,20 +412,24 @@ describe('text objects', () => {
     expect(run(['no brackets'], 'di(').deletes).toEqual([]);
   });
 
-  it('brackets: outside any pair, the next pair is used (Vim 9.1)', () => {
+  it('brackets: outside any pair, the next pair is used', () => {
     expect(run(['a (b) c'], 'di(').rows).toEqual(['a () c']);
     expect(run(['a (b) c'], 'da(').rows).toEqual(['a  c']);
     expect(run(['a [b] {c}'], 'di{').rows).toEqual(['a [b] {}']);
     expect(run(['a b', 'c (d) e'], 'da(').rows).toEqual(['a b', 'c  e']); // also on a later row
     expect(run(['(a) b (c)'], 'di(', [0, 4]).rows).toEqual(['(a) b ()']);
     expect(run(['(a) b'], 'di(', [0, 4]).deletes).toEqual([]); // nothing after the cursor
-    expect(run(['a ) b (c)'], 'di(').deletes).toEqual([]); // a stray ) pairs off the next (
+    expect(run(['a ) b (c)'], 'di(').rows).toEqual(['a ) b ()']); // a stray ) is not part of any pair
     expect(run(['a (b', 'c'], 'di(', [1, 0]).deletes).toEqual([]); // inside an unclosed (: no fallback
   });
 
   it('brackets across rows', () => {
     expect(run(['f(a,', 'b)'], 'di(', [1, 0]).rows).toEqual(['f()']);
-    expect(run(['fn {', '  a', '  b', '}'], 'di{', [1, 2]).rows).toEqual(['fn {', '}']); // inner block is linewise
+    // mini.ai: i{ is the text without the whitespace around it; i} is everything between the brackets
+    expect(run(['fn {', '  a', '  b', '}'], 'di{', [1, 2]).rows).toEqual(['fn {', '  ', '}']);
+    expect(run(['fn {', '  a', '  b', '}'], 'di}', [1, 2]).rows).toEqual(['fn {}']);
+    // Vim's own iB is still linewise here
+    expect(run(['fn {', '  a', '  b', '}'], 'diB', [1, 2]).rows).toEqual(['fn {', '}']);
     expect(run(['fn {', '  a', '}', 'x'], 'da{', [1, 2]).rows).toEqual(['fn ', 'x']);
   });
 
@@ -588,10 +596,10 @@ describe('search', () => {
     expect(run(rows, '2/foo<CR>').at).toEqual([2, 0]);
   });
 
-  it('? searches backward; n keeps that direction, N reverses it', () => {
+  it('? searches backward; n still goes forward and N backward (LazyVim)', () => {
     expect(run(rows, '?foo<CR>').at).toEqual([2, 7]); // wrapped to the bottom
-    expect(run(rows, '?foo<CR>n').at).toEqual([2, 0]);
-    expect(run(rows, '?foo<CR>N').at).toEqual([0, 0]);
+    expect(run(rows, '?foo<CR>n').at).toEqual([0, 0]); // forward, wrapping to the top
+    expect(run(rows, '?foo<CR>N').at).toEqual([2, 0]);
   });
 
   it('shows the prompt while typing; Backspace edits; Esc cancels', () => {

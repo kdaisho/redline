@@ -15,7 +15,7 @@ import {
   normalizeSelection,
 } from './state.ts';
 import { type Mode, type HelpSection, MODES, modeInfo } from './modes.ts';
-import { type VimStatus, type Span } from './vim.ts';
+import { type VimStatus, type Span, type FlashView } from './vim.ts';
 
 /** Terminal palette (spec §7): pastel red/blue text on a stark editor pane. */
 export const COLORS = {
@@ -37,6 +37,9 @@ export const COLORS = {
   strikeOn: '#f5a0a0',
   strikeOff: '#2d3748',
   cleared: '#9be08a', // stage-clear celebration accent (green)
+  flashBackdrop: 'rgba(7,10,14,0.5)', // flash jump: the board fades back …
+  flashMatch: 'rgba(255,255,255,0.16)', // … its matches are lifted out again …
+  flashLabel: '#f2e36b', // … and each gets a label (yellow: neither red nor blue)
 } as const;
 
 // ── layout ───────────────────────────────────────────────────────────────
@@ -222,6 +225,7 @@ export function render(
     // selection drawn AFTER blocks so the highlight reads clearly over the text
     if (scene.field.select) drawSelection(ctx, scene.field, scene.field.select, geom);
     if (scene.vim) for (const s of scene.vim.spans) drawSpan(ctx, geom, s.line, s.from, s.to);
+    if (scene.vim?.flash) drawFlash(ctx, scene.field, scene.vim.flash, geom, frame);
     drawFlashes(ctx, scene.fx, geom, nowMs);
     if (scene.vim) drawBlockCursor(ctx, scene.field, scene.vim, scene.fx, nowMs, geom);
     else drawCaret(ctx, scene.field, scene.fx, nowMs, geom);
@@ -262,7 +266,11 @@ function drawFootline(ctx: CanvasRenderingContext2D, width: number, height: numb
   if (vim) {
     ctx.textAlign = 'left';
     ctx.font = mono(11, true);
-    if (vim.prompt !== null) {
+    if (vim.flash) {
+      // flash jump: the text typed so far (labels are on the board)
+      ctx.fillStyle = COLORS.flashLabel;
+      ctx.fillText(`flash: ${vim.flash.pattern}█`, FRAME_PAD, y);
+    } else if (vim.prompt !== null) {
       ctx.fillStyle = COLORS.text;
       ctx.fillText(`${vim.prompt}█`, FRAME_PAD, y);
     } else if (vim.message) {
@@ -953,6 +961,50 @@ function drawSpan(ctx: CanvasRenderingContext2D, geom: FieldGeom, row: number, f
   ctx.strokeStyle = COLORS.selectionEdge;
   ctx.lineWidth = 1.5;
   ctx.strokeRect(x + 0.75, y + 0.75, w - 1.5, h - 1.5);
+}
+
+/**
+ * A flash jump in progress (#9): the board fades back, every match of the typed
+ * text is lifted out again in its own colour, and the label of each match sits
+ * on the cell right after it — where flash.nvim puts it.
+ */
+function drawFlash(
+  ctx: CanvasRenderingContext2D,
+  field: FieldState,
+  flash: FlashView,
+  geom: FieldGeom,
+  frame: FrameRect,
+): void {
+  ctx.fillStyle = COLORS.flashBackdrop;
+  ctx.fillRect(frame.x + 1, frame.y + 1, frame.w - 2, frame.h - 2);
+
+  ctx.font = GLYPH_FONT;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const h = LH - 2;
+  for (const m of flash.matches) {
+    const y = geom.oy + m.line * LH;
+    for (let c = m.col; c < m.col + flash.len; c++) {
+      const x = geom.ox + c * BW;
+      ctx.fillStyle = COLORS.flashMatch;
+      ctx.fillRect(x, y, BW, h);
+      const b = field.lines[m.line]?.[c];
+      if (b && b.color !== null) {
+        ctx.fillStyle = b.color === 'red' ? COLORS.red : COLORS.blue;
+        ctx.fillText(b.ch, x + BW / 2, y + CELL_TOP + CELL_H / 2 + 1);
+      }
+    }
+  }
+  for (const l of flash.labels) {
+    const x = geom.ox + l.col * BW;
+    const y = geom.oy + l.line * LH;
+    ctx.fillStyle = COLORS.flashLabel;
+    ctx.fillRect(x, y, BW, h);
+    ctx.fillStyle = COLORS.bg;
+    ctx.fillText(l.label, x + BW / 2, y + CELL_TOP + CELL_H / 2 + 1);
+  }
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
 }
 
 /**
