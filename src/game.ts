@@ -22,7 +22,25 @@ import { createVimKeymap } from './keymaps/vim.ts';
 import { Vim } from './vim.ts';
 import { type Mode, MODES, loadMode, saveMode } from './modes.ts';
 import { loadStage, stageBudgetMs, MAX_STAGE_INDEX } from './stages.ts';
-import { initAudio, loadMuted, toggleMute, playRedPop, playBlueError, playFanfare } from './audio.ts';
+import {
+  installAudio,
+  isMuted,
+  toggleMute,
+  adjustVolume,
+  toggleBusMute,
+  audioLabel,
+  setMusicScene,
+  sfx,
+  playCues,
+} from './audio.ts';
+import {
+  type VimSnapshot,
+  moveCue,
+  deleteCues,
+  vimCue,
+  secondsLeft,
+  lowTimeTick,
+} from './audio/cues.ts';
 
 const MAX_STRIKES = 2; // spec §3
 const FLASH_LIFETIME_MS = 220; // prune snap-out flashes after they finish drawing
@@ -142,6 +160,15 @@ export const CHORD_MULT: Record<Chord, number> = {
 };
 
 const COMBO_TIMEOUT_MS = 1500; // a pause longer than this breaks the combo (§4)
+
+// ── SFX timing (#14): where several cues answer one event, they are staggered ──
+const SFX_STRIKE_DELAY = 0.14; // the strike lands just after the mistake
+const SFX_COMBO_BREAK_DELAY = 0.34; // …and the lost combo after the strike
+const SFX_GAME_OVER_AFTER_STRIKE = 0.45; // game over follows the final strike
+const SFX_GAME_OVER_AFTER_TIME_UP = 0.7; // …or the time-up sweep
+const SFX_COMBO_UP_DELAY = 0.05; // the combo note rides just behind the delete
+const SFX_STAGE_CLEAR_DELAY = 0.12; // the last delete is heard before the clear
+const SFX_STAGE_START_AFTER_CONFIRM = 0.12; // menu confirm first, then the stage sweep
 const COMBO_MAX_LEVEL = 12; // cap the ×2^level growth
 
 /** Multiplier for a clean delete at a given combo level: ×1, ×2, ×4, … */
@@ -217,7 +244,14 @@ export class Game {
   private best: Best = { score: 0, stage: 0, timeMs: 0 };
   private isNewBest = false;
   private detachInput: (() => void) | null = null;
+  private detachAudio: (() => void) | null = null;
   private muted = false; // KDA-46: HUD reflection of the audio mute state
+  private soundText = ''; // HUD SOUND readout: the two volumes (#14)
+
+  // ── SFX bookkeeping (#14) ──
+  private comboAlive = false; // a combo is running and its break has not been sounded yet
+  private countdownTicks = 0; // countdown digits already ticked this countdown
+  private warnSeconds = Infinity; // last whole-second value the low-time warning looked at
 
   // ── control mode (#8): picked on the start screen, fixed for the run ──
   private mode: Mode = loadMode();
@@ -256,10 +290,21 @@ export class Game {
   }
 
   start(): void {
+    // Before the input: audio's capture listener unlocks the context on the first
+    // key, so the same key's handler can already play.
+    this.detachAudio = installAudio();
     this.detachInput = attachInput({
       keymap: () => this.keymaps[this.mode],
       confirm: () => this.onConfirm(),
       mute: () => this.onMute(),
+      volume: (bus, delta) => {
+        adjustVolume(bus, delta);
+        this.soundText = audioLabel();
+      },
+      busMute: (bus) => {
+        toggleBusMute(bus);
+        this.soundText = audioLabel();
+      },
       help: () => this.onHelp(),
       menu: () => this.onMenu(),
       pickMode: (i) => this.onPickMode(i),
@@ -267,7 +312,9 @@ export class Game {
       isActive: () => this.phase === 'playing' && !this.helpOpen,
     });
     this.best = loadBest(this.mode);
-    this.muted = loadMuted();
+    this.muted = isMuted();
+    this.soundText = audioLabel();
+    setMusicScene({ kind: 'title' }); // starts with the first key press (autoplay policy)
     // The run waits on the start screen; the clock starts only on beginRun().
     const loop = (now: number) => {
       this.elapsedMs = this.clock.elapsed(now);
@@ -280,7 +327,6 @@ export class Game {
 
   /** Enter/Space: start a run, advance from a cleared stage, or restart from game over. */
   private onConfirm(): void {
-    initAudio(); // unlock/resume the AudioContext on this user gesture (autoplay policy)
     if (this.helpOpen) {
       this.closeHelp();
       return;
@@ -290,12 +336,13 @@ export class Game {
       this.advanceStage();
       return;
     }
-    this.beginRun(); // from 'start' or 'over'
+    sfx('menuConfirm');
+    this.beginRun(); // from 'start', 'over' or 'won'
   }
 
   /** M / F2: toggle mute and mirror it for the HUD. */
   private onMute(): void {
-    this.muted = toggleMute();
+    this.muted = toggleMute(); // plays the mute cue on both edges
   }
 
   /**
@@ -310,6 +357,7 @@ export class Game {
     }
     if (this.phase !== 'start' && this.phase !== 'playing') return;
     this.helpOpen = true;
+    sfx('menuMove');
     if (this.phase === 'playing') {
       const now = performance.now();
       this.clock.pause(now);
@@ -320,6 +368,7 @@ export class Game {
   private closeHelp(): void {
     if (!this.helpOpen) return;
     this.helpOpen = false;
+    sfx('menuMove');
     if (this.phase === 'playing') {
       const now = performance.now();
       this.clock.resume(now);
@@ -346,6 +395,7 @@ export class Game {
     if (this.phase !== 'start' || this.helpOpen || mode === this.mode) return;
     if (!MODES.find((m) => m.id === mode)?.available) return;
     this.mode = mode;
+    sfx('menuMove');
     saveMode(mode);
     this.best = loadBest(mode); // each mode has its own best
   }
@@ -358,6 +408,8 @@ export class Game {
     }
     if (this.phase !== 'over' && this.phase !== 'won') return;
     this.phase = 'start';
+    sfx('menuMove');
+    setMusicScene({ kind: 'title' });
     this.stageIndex = 0;
     this.field = loadStage(0, RUN_SEED);
     this.vim = new Vim();
@@ -385,6 +437,7 @@ export class Game {
     this.strikeFlashMs = -Infinity;
     this.clearedFlashMs = -Infinity;
     this.isNewBest = false;
+    this.comboAlive = false;
     this.clock.reset(); // HUD reads 00:00 during the countdown, not last run's frozen time
     this.enterCountdown(true);
   }
@@ -398,6 +451,13 @@ export class Game {
     this.phase = 'countdown';
     this.countdownFresh = fresh;
     this.countdownStartMs = performance.now();
+    // The tier's track: unchanged within a tier (it plays on through countdown
+    // and stage clear), a short fade to the next one at stages 11, 21, 31, 41.
+    setMusicScene({ kind: 'stage', stageIndex: this.stageIndex });
+    // A fresh run was started with a menu confirm, so the sweep waits a beat.
+    sfx('stageStart', undefined, fresh ? SFX_STAGE_START_AFTER_CONFIRM : 0);
+    sfx('countdownTick'); // "3" — the later digits tick from update()
+    this.countdownTicks = 1;
   }
 
   /** Countdown elapsed: reveal the board, flash "GO", and let the clock run. */
@@ -410,12 +470,23 @@ export class Game {
     if (this.countdownFresh) this.clock.start(now);
     else this.clock.resume(now);
     this.stageClock.start(now); // each stage's budget starts counting only now (KDA-59)
+    this.warnSeconds = secondsLeft(this.stageLimitMs);
+    sfx('countdownGo');
   }
 
   stop(): void {
     cancelAnimationFrame(this.rafId);
     this.detachInput?.();
     this.detachInput = null;
+    this.detachAudio?.();
+    this.detachAudio = null;
+  }
+
+  /** Total characters and rows on the field — measured around a delete to size its sound. */
+  private fieldSize(): { chars: number; rows: number } {
+    let chars = 0;
+    for (const ln of this.field.lines) chars += ln.length;
+    return { chars, rows: this.field.lines.length };
   }
 
   private markInput(): void {
@@ -425,10 +496,15 @@ export class Game {
   private onMove(action: MoveAction): void {
     if (this.phase !== 'playing') return;
     const next = moveCaret(this.field, this.field.caret, this.goalCol, action);
+    const moved = !posEqual(next.caret, this.field.caret);
+    const hadSelection = this.field.select !== null;
     this.field.caret = next.caret;
     this.goalCol = next.goalCol;
     this.field.select = null; // plain movement collapses any selection
     this.markInput();
+    // A move that drops a selection sounds as the clear; one that hits a wall is silent.
+    if (hadSelection) sfx('selClear');
+    else if (moved) playCues([moveCue(action)]);
   }
 
   private onSelect(action: MoveAction): void {
@@ -436,12 +512,17 @@ export class Game {
     // Anchor stays put from the first extend; the head moves like a caret.
     const anchor = this.field.select ? this.field.select.anchor : { ...this.field.caret };
     const moved = moveCaret(this.field, this.field.caret, this.goalCol, action);
+    const changed = !posEqual(moved.caret, this.field.caret);
+    const hadSelection = this.field.select !== null;
     this.field.caret = moved.caret;
     this.goalCol = moved.goalCol;
     const head = moved.caret;
     // Collapsing back onto the anchor clears the selection.
     this.field.select = posEqual(anchor, head) ? null : { anchor, head };
     this.markInput();
+    if (this.field.select === null) {
+      if (hadSelection) sfx('selClear');
+    } else if (changed) sfx('selExtend');
   }
 
   /** Alt+↑/↓: reorder rows. Pure layout — no blocks removed, so no score, mistake, or clear check. */
@@ -450,7 +531,21 @@ export class Game {
     if (moveRows(this.field, dir)) {
       this.goalCol = this.field.caret.col;
       this.markInput();
+      sfx('rowMove');
     }
+  }
+
+  /** The Vim engine's visible state, for telling what a key did (`vimCue`). */
+  private vimSnapshot(): VimSnapshot {
+    const st = this.vim.status();
+    return {
+      mode: st.mode,
+      pending: st.pending,
+      prompt: st.prompt,
+      flash: st.flash ? st.flash.pattern : null,
+      message: st.message,
+      caret: { ...this.field.caret },
+    };
   }
 
   /**
@@ -460,14 +555,24 @@ export class Game {
    */
   private onVimKey(key: string): boolean {
     if (this.phase !== 'playing') return false;
+    const size = this.fieldSize();
+    const before = this.vimSnapshot();
     const outcome = this.vim.key(this.field, key);
     this.markInput();
-    if (outcome.deleted) this.applyDelete(outcome.deleted);
+    if (outcome.deleted) {
+      this.applyDelete(outcome.deleted, size);
+    } else {
+      // Mode change, half-typed command, move, or a key that did nothing — the
+      // engine stays pure; the sound is read off its state before and after.
+      const cue = vimCue(before, this.vimSnapshot(), key);
+      if (cue) playCues([cue]);
+    }
     return outcome.repeatable;
   }
 
   private onDelete(action: DeleteAction): void {
     if (this.phase !== 'playing') return;
+    const size = this.fieldSize();
     let result: DeleteResult;
     switch (action) {
       case 'backward':
@@ -489,22 +594,18 @@ export class Game {
         result = deleteToLineEnd(this.field);
         break;
     }
-    this.applyDelete(result);
+    this.applyDelete(result, size);
   }
 
   /**
    * Fold one delete into the run — feedback, score, strikes, clear check. Shared
    * by every mode: however the keys were pressed, one delete command is one
-   * action for scoring and mistakes.
+   * action for scoring and mistakes. `before` is the field's size before the
+   * delete ran (the result only lists the coloured blocks it removed).
    */
-  private applyDelete(result: DeleteResult): void {
+  private applyDelete(result: DeleteResult, before: { chars: number; rows: number }): void {
     this.goalCol = this.field.caret.col;
     this.markInput();
-
-    // Audio (KDA-46): a mistake (any blue) takes the negative cue; a clean red
-    // delete pops; spaces-only deletes are silent.
-    if (isMistake(result)) playBlueError();
-    else if (result.red > 0) playRedPop();
 
     // Snap-out flash for each cleared block (at its pre-collapse position).
     const now = performance.now();
@@ -513,15 +614,44 @@ export class Game {
     }
 
     // Score the delete (combo reset on mistake/timeout handled inside).
-    const prevLevel = this.scoreState.comboLevel;
-    this.scoreState = applyScore(this.scoreState, result, this.elapsedMs);
+    const prevScore = this.scoreState;
+    const prevLevel = prevScore.comboLevel;
+    const comboWasAlive = prevLevel > 0 && this.comboAlive;
+    this.scoreState = applyScore(prevScore, result, this.elapsedMs);
     if (this.scoreState.comboLevel > prevLevel) this.comboPulseMs = now; // pulse on build
-    if (isMistake(result)) this.registerMistake();
+    // (a neutral delete leaves the score state — and a combo already heard breaking — alone)
+    if (this.scoreState !== prevScore) this.comboAlive = this.scoreState.comboLevel > 0;
+
+    if (isMistake(result)) {
+      // Audio (#14): a mistake (any blue) takes the negative cue instead of the
+      // delete's own sound, then the strike it costs. A second strike goes on to
+      // game over (endRun); otherwise a running combo is heard breaking.
+      sfx('mistake');
+      sfx('strike', undefined, SFX_STRIKE_DELAY);
+      this.registerMistake();
+      if (this.phase === 'playing' && comboWasAlive) sfx('comboBreak', undefined, SFX_COMBO_BREAK_DELAY);
+    } else {
+      // The delete's own sound, by chord and size (several rows → the big chord).
+      const after = this.fieldSize();
+      playCues(
+        deleteCues({
+          chord: result.chord,
+          removed: before.chars - after.chars,
+          rowsRemoved: before.rows - after.rows,
+          rowsTouched: new Set(result.cells.map((c) => c.line)).size,
+        }),
+      );
+    }
 
     // Game over wins over clearing (a delete can clear the last red AND be a
     // second-strike mistake at once).
     if (this.phase !== 'playing') return;
-    if (redsRemaining(this.field) === 0) this.stageCleared();
+    if (redsRemaining(this.field) === 0) {
+      this.stageCleared();
+    } else if (!isMistake(result) && result.red > 0) {
+      // A clean red delete steps the combo up; the note climbs with the level.
+      sfx('comboUp', { level: this.scoreState.comboLevel }, SFX_COMBO_UP_DELAY);
+    }
   }
 
   /** Cleared every red → celebrate and wait for Enter; pause the clock meanwhile. */
@@ -531,7 +661,7 @@ export class Game {
     this.clock.pause(now); // time stops while the celebration is up
     this.stageClock.pause(now); // the stage budget freezes too — no penalty for reading the screen
     this.clearedFlashMs = now; // also gates the backdrop delay in render (KDA-48)
-    playFanfare(); // KDA-47: short cue at the moment of clear, before the text
+    sfx('stageClear', undefined, SFX_STAGE_CLEAR_DELAY); // at the moment of clear, before the text (KDA-47)
   }
 
   /** Advance to the next (denser/taller) stage; score/strikes/time carry forward. */
@@ -543,6 +673,8 @@ export class Game {
       this.clock.freeze(now);
       this.stageClock.freeze(now);
       this.finalizeRun();
+      sfx('runWin');
+      setMusicScene({ kind: 'won' }); // the win theme comes in after the cue
       return;
     }
     this.stageIndex++;
@@ -576,6 +708,13 @@ export class Game {
     this.clock.freeze(now); // capture the final time precisely
     this.stageClock.freeze(now);
     this.finalizeRun();
+    if (reason === 'timeout') {
+      sfx('timeUp');
+      sfx('gameOver', undefined, SFX_GAME_OVER_AFTER_TIME_UP);
+    } else {
+      sfx('gameOver', undefined, SFX_GAME_OVER_AFTER_STRIKE); // after the mistake + strike cues
+    }
+    setMusicScene({ kind: 'over' }); // the game-over theme comes in after the cue
   }
 
   /** On game over, record a new best score (higher wins) to localStorage. */
@@ -600,14 +739,40 @@ export class Game {
     }
 
     // Countdown over → reveal the board and let the clock run (KDA-49).
-    if (this.phase === 'countdown' && now - this.countdownStartMs >= COUNTDOWN_MS) {
-      this.finishCountdown();
+    if (this.phase === 'countdown') {
+      if (now - this.countdownStartMs >= COUNTDOWN_MS) {
+        this.finishCountdown();
+      } else {
+        // one tick per digit as it appears ("3" ticked when the countdown began)
+        const shown = Math.floor((now - this.countdownStartMs) / COUNTDOWN_STEP_MS) + 1;
+        if (shown > this.countdownTicks) {
+          this.countdownTicks = shown;
+          sfx('countdownTick');
+        }
+      }
     }
 
     // Per-stage countdown (KDA-59): frozen once the run ends, paused during
     // cleared/countdown. Hitting zero while playing ends the run like a strike.
     this.stageRemainingMs = Math.max(0, this.stageLimitMs - this.stageClock.elapsed(now));
     if (this.phase === 'playing' && this.stageRemainingMs <= 0) this.endRun('timeout');
+
+    if (this.phase === 'playing' && !this.helpOpen) {
+      // Low time (#14): one warning per second over the stage's last five seconds.
+      const left = secondsLeft(this.stageRemainingMs);
+      if (lowTimeTick(this.warnSeconds, left)) sfx('timeWarning');
+      this.warnSeconds = left;
+
+      // A combo that lapses is heard when it lapses, not at the next delete.
+      if (
+        this.comboAlive &&
+        this.scoreState.comboLevel > 0 &&
+        this.elapsedMs - this.scoreState.lastDeleteMs > COMBO_TIMEOUT_MS
+      ) {
+        this.comboAlive = false;
+        sfx('comboBreak');
+      }
+    }
   }
 
   private scene(): Scene {
@@ -629,6 +794,7 @@ export class Game {
         strikes: this.strikes,
         maxStrikes: MAX_STRIKES,
         muted: this.muted,
+        soundText: this.soundText,
         stageLimitMs: this.stageLimitMs,
         stageRemainingMs: this.stageRemainingMs,
       },

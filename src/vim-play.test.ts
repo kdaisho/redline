@@ -78,6 +78,8 @@ describe('controller + vim keymap', () => {
       confirm: () => calls.push('confirm'),
       mute: () => calls.push('mute'),
       help: () => calls.push('help'),
+      volume: (bus, delta) => calls.push(`${bus}${delta > 0 ? '+' : '-'}`),
+      busMute: (bus) => calls.push(`${bus} off/on`),
       menu: () => calls.push('menu'),
       pickMode: (i) => calls.push(`pick${i}`),
       cycleMode: () => calls.push('cycle'),
@@ -157,6 +159,25 @@ describe('controller + vim keymap', () => {
     press('F1');
     press('F2');
     expect(calls).toEqual(['help', 'mute', 'help', 'mute']);
+  });
+
+  it('F3 F4 / F6 F7 are the music / SFX volume in every state, and never reach Vim (#14)', () => {
+    const before = rows();
+    for (const playing of [true, false]) {
+      active = playing;
+      calls = [];
+      for (const key of ['F3', 'F4', 'F6', 'F7']) press(key);
+      expect(calls).toEqual(['music-', 'music+', 'sfx-', 'sfx+']);
+    }
+    calls = [];
+    press('F4', { repeat: true }); // holding a volume key keeps stepping
+    press('F3', { shiftKey: true });
+    press('F6', { shiftKey: true });
+    press('F6', { shiftKey: true, repeat: true }); // a held toggle does not flap
+    expect(calls).toEqual(['music+', 'music off/on', 'sfx off/on']);
+    expect(press('F5')).toBe(true); // F5 (reload) is left to the browser: not cancelled
+    expect(rows()).toEqual(before);
+    expect(vim.status().pending).toBe('');
   });
 
   it('a key held through a screen does not fire when play resumes', () => {
