@@ -103,7 +103,7 @@ const VIM_HELP: HelpSection[] = [
     rows: [
       ['/text  ?text  Enter', 'search forward / backward (plain text, wraps)'],
       ['n  N', 'next match · the other way'],
-      ['*  #', 'next / previous occurrence of the word under the cursor'],
+      ['*  #', 'next / previous match of the word at cursor'],
     ],
   },
   {
