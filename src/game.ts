@@ -16,7 +16,9 @@ import {
   redsRemaining,
   posEqual,
 } from './state.ts';
-import { attachInput, type DeleteAction } from './input.ts';
+import { attachInput, type DeleteAction, type Keymap } from './input.ts';
+import { createStandardKeymap } from './keymaps/standard.ts';
+import { type Mode, MODES, loadMode, saveMode } from './modes.ts';
 import { loadStage, stageBudgetMs, MAX_STAGE_INDEX } from './stages.ts';
 import { initAudio, loadMuted, toggleMute, playRedPop, playBlueError, playFanfare } from './audio.ts';
 
@@ -35,7 +37,10 @@ const COUNTDOWN_MS = COUNTDOWN_FROM * COUNTDOWN_STEP_MS;
 const RUN_SEED = 0;
 
 // ── best score persistence (spec §6) ────────────────────────────────────────
+// One best per mode (#8). Standard keeps the original un-suffixed key, so the
+// best recorded before modes existed carries over as Standard's.
 const BEST_KEY = 'redline.best';
+const bestKey = (mode: Mode): string => (mode === 'standard' ? BEST_KEY : `${BEST_KEY}.${mode}`);
 
 export interface Best {
   score: number;
@@ -43,9 +48,9 @@ export interface Best {
   timeMs: number;
 }
 
-export function loadBest(): Best {
+export function loadBest(mode: Mode): Best {
   try {
-    const raw = localStorage.getItem(BEST_KEY);
+    const raw = localStorage.getItem(bestKey(mode));
     if (raw) {
       const b = JSON.parse(raw) as Partial<Best>;
       if (typeof b.score === 'number') {
@@ -58,9 +63,9 @@ export function loadBest(): Best {
   return { score: 0, stage: 0, timeMs: 0 };
 }
 
-export function saveBest(b: Best): void {
+export function saveBest(mode: Mode, b: Best): void {
   try {
-    localStorage.setItem(BEST_KEY, JSON.stringify(b));
+    localStorage.setItem(bestKey(mode), JSON.stringify(b));
   } catch {
     // ignore persistence failures
   }
@@ -212,6 +217,10 @@ export class Game {
   private detachInput: (() => void) | null = null;
   private muted = false; // KDA-46: HUD reflection of the audio mute state
 
+  // ── control mode (#8): picked on the start screen, fixed for the run ──
+  private mode: Mode = loadMode();
+  private readonly keymaps: Record<Mode, Keymap>;
+
   // ── pre-stage countdown (KDA-49) ──
   private countdownStartMs = 0; // performance.now() when the countdown began
   private countdownFresh = false; // true → start the clock on finish; false → resume
@@ -229,19 +238,27 @@ export class Game {
     this.width = width;
     this.height = height;
     this.field = loadStage(this.stageIndex);
-  }
-
-  start(): void {
-    this.detachInput = attachInput({
+    // Each mode is its own keymap over the same field actions.
+    const standard = createStandardKeymap({
       move: (a) => this.onMove(a),
       select: (a) => this.onSelect(a),
       delete: (a) => this.onDelete(a),
       moveRow: (d) => this.onMoveRow(d),
+    });
+    this.keymaps = { standard, vim: standard }; // Vim's own keymap lands with #7
+  }
+
+  start(): void {
+    this.detachInput = attachInput({
+      keymap: () => this.keymaps[this.mode],
       confirm: () => this.onConfirm(),
       mute: () => this.onMute(),
+      menu: () => this.onMenu(),
+      pickMode: (i) => this.onPickMode(i),
+      cycleMode: () => this.onCycleMode(),
       isActive: () => this.phase === 'playing',
     });
-    this.best = loadBest();
+    this.best = loadBest(this.mode);
     this.muted = loadMuted();
     // The run waits on the start screen; the clock starts only on beginRun().
     const loop = (now: number) => {
@@ -267,6 +284,43 @@ export class Game {
   /** M: toggle mute and mirror it for the HUD. */
   private onMute(): void {
     this.muted = toggleMute();
+  }
+
+  /** 1, 2, … on the start screen: pick a mode by its picker position. */
+  private onPickMode(index: number): void {
+    const info = MODES[index];
+    if (info) this.setMode(info.id);
+  }
+
+  /** Tab on the start screen: step to the next playable mode. */
+  private onCycleMode(): void {
+    const playable = MODES.filter((m) => m.available);
+    const at = playable.findIndex((m) => m.id === this.mode);
+    this.setMode(playable[(at + 1) % playable.length].id);
+  }
+
+  /** Switch mode (start screen only — a run is played in one mode) and remember it. */
+  private setMode(mode: Mode): void {
+    if (this.phase !== 'start' || mode === this.mode) return;
+    if (!MODES.find((m) => m.id === mode)?.available) return;
+    this.mode = mode;
+    saveMode(mode);
+    this.best = loadBest(mode); // each mode has its own best
+  }
+
+  /** Escape on an end screen: back to the start screen, where the mode can be changed. */
+  private onMenu(): void {
+    if (this.phase !== 'over' && this.phase !== 'won') return;
+    this.phase = 'start';
+    this.stageIndex = 0;
+    this.field = loadStage(0, RUN_SEED);
+    this.stageLimitMs = 0; // hides the LIMIT readout until a run starts
+    this.stageClock.reset();
+    this.clock.reset();
+    this.scoreState = initialScore();
+    this.strikes = 0;
+    this.flashes = [];
+    this.isNewBest = false;
   }
 
   /** Reset all run state to a fresh stage 1, then run the pre-stage countdown. */
@@ -374,6 +428,15 @@ export class Game {
         result = deleteToLineEnd(this.field);
         break;
     }
+    this.applyDelete(result);
+  }
+
+  /**
+   * Fold one delete into the run — feedback, score, strikes, clear check. Shared
+   * by every mode: however the keys were pressed, one delete command is one
+   * action for scoring and mistakes.
+   */
+  private applyDelete(result: DeleteResult): void {
     this.goalCol = this.field.caret.col;
     this.markInput();
 
@@ -464,7 +527,7 @@ export class Game {
     if (final.score > this.best.score) {
       this.best = final;
       this.isNewBest = true;
-      saveBest(this.best);
+      saveBest(this.mode, this.best);
     }
   }
 
@@ -489,6 +552,7 @@ export class Game {
     return {
       field: this.field,
       phase: this.phase,
+      mode: this.mode,
       overReason: this.overReason,
       best: this.best.score,
       isNewBest: this.isNewBest,

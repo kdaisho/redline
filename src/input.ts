@@ -1,8 +1,12 @@
 /**
- * Keyboard input (spec §2): macOS movement chords mapped to actions, with
- * hold-to-repeat. We run our own repeat clock (not the OS key-repeat) so the
- * cadence is consistent regardless of system settings. Selection (KDA-36) and
- * deletion (KDA-37) attach more handlers onto this same controller later.
+ * Keyboard input (spec §2). This module is the shared controller: it owns the
+ * window listeners, the hold-to-repeat clock, and the global keys (start / mute /
+ * mode picker). What a key *does* on
+ * the field is decided by the active mode's keymap (#8) — `keymaps/standard.ts`
+ * and friends — each of which maps keys onto the same shared field actions.
+ *
+ * We run our own repeat clock (not the OS key-repeat) so the cadence is
+ * consistent regardless of system settings.
  */
 import { type MoveAction } from './state.ts';
 
@@ -21,58 +25,72 @@ export type DeleteAction =
   | 'word-right'
   | 'to-line-end';
 
-export interface InputHandlers {
+/** The field actions every mode's keymap is built over. */
+export interface FieldActions {
   move(action: MoveAction): void;
-  /** Extend the selection by the same chord (Shift held). */
+  /** Extend the selection by the same motion. */
   select(action: MoveAction): void;
   delete(action: DeleteAction): void;
-  /** Alt(Option) + ↑/↓ — move the caret's row (or selected rows) up (-1) / down (+1). */
+  /** Move the caret's row (or selected rows) up (-1) / down (+1). */
   moveRow(dir: -1 | 1): void;
+}
+
+/** What a key does in the active mode. */
+export interface KeyAction {
+  /** Run it. Return true when it may auto-repeat while the key stays held. */
+  fire(): boolean;
+  /** Leave another key's running auto-repeat alone (a tap that is not itself held). */
+  passive?: boolean;
+}
+
+/** One mode's key bindings: resolve a keydown into an action, or null if the mode doesn't use the key. */
+export interface Keymap {
+  resolve(e: KeyboardEvent): KeyAction | null;
+}
+
+export interface InputHandlers {
+  /** The active mode's keymap. Asked on every keydown, so a mode switch applies at once. */
+  keymap(): Keymap;
   /** Enter/Space — start or restart a run (start & game-over screens). */
   confirm(): void;
   /** M — toggle mute (KDA-46). */
   mute(): void;
+  /** Escape — back to the start screen from an end screen. */
+  menu(): void;
+  /** A digit key on a screen: pick the mode at this 0-based picker index. */
+  pickMode(index: number): void;
+  /** Tab on a screen: step to the next mode. */
+  cycleMode(): void;
   /**
-   * Whether gameplay input (movement/selection/deletion) is currently accepted.
-   * False during the countdown, stage-clear, start, and game-over screens —
-   * gating here (not just in the handlers) stops held keys from arming the
-   * auto-repeat and leaking into the board the instant play begins.
+   * Whether gameplay input is currently accepted. False during the countdown,
+   * stage-clear, start, and game-over screens — gating here (not just in the
+   * handlers) stops held keys from arming the auto-repeat and leaking into the
+   * board the instant play begins.
    */
   isActive(): boolean;
 }
 
-/** Resolve a keydown into a movement action, honoring Cmd/Alt chords. */
-function movementFor(e: KeyboardEvent): MoveAction | null {
-  switch (e.key) {
-    case 'ArrowLeft':
-      return e.metaKey ? 'line-start' : e.altKey ? 'word-left' : 'char-left';
-    case 'ArrowRight':
-      return e.metaKey ? 'line-end' : e.altKey ? 'word-right' : 'char-right';
-    case 'ArrowUp':
-      return e.metaKey ? 'doc-start' : 'line-up';
-    case 'ArrowDown':
-      return e.metaKey ? 'doc-end' : 'line-down';
-    default:
-      return null;
-  }
-}
-
 /**
- * Fires an action once on press, then repeats while the key is held. Tracks a
- * single active physical key (e.code); a new movement key overrides the old.
+ * Fires an action once on press, then repeats while the key is held (if the
+ * action allows it). Tracks a single active physical key (e.code); a new key
+ * overrides the old.
  */
 class Repeater {
   private activeKey: string | null = null;
   private delayId = 0;
   private rateId = 0;
 
-  start(key: string, fire: () => void): void {
+  /** `fire` returns whether it may keep repeating; a false return ends the hold. */
+  start(key: string, fire: () => boolean): void {
     if (this.activeKey === key) return; // already repeating this key
     this.stop();
+    if (!fire()) return;
     this.activeKey = key;
-    fire();
+    const tick = () => {
+      if (!fire()) this.stop();
+    };
     this.delayId = window.setTimeout(() => {
-      this.rateId = window.setInterval(fire, REPEAT_RATE);
+      this.rateId = window.setInterval(tick, REPEAT_RATE);
     }, REPEAT_DELAY);
   }
 
@@ -90,95 +108,74 @@ class Repeater {
 /** Wire input handlers to the window. Returns a teardown function. */
 export function attachInput(handlers: InputHandlers, target: Window = window): () => void {
   const repeater = new Repeater();
-  // Movement keys seen while input is inactive (countdown / clear / over) — incl.
-  // a key held down from a prior stage, whose OS key-repeat keeps arriving. They
-  // stay neutralized until physically released, so a held key can't fire the
-  // instant play begins (which otherwise selects/moves row 0 on stage start).
-  const heldOver = new Set<string>();
-
-  const onKeyDown = (e: KeyboardEvent) => {
+  /** Keys that belong to the game itself, not to a mode. Returns true when handled. */
+  const globalKey = (e: KeyboardEvent, active: boolean): boolean => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       if (!e.repeat) handlers.confirm();
-      return;
+      return true;
     }
-
-    if (e.key === 'Backspace') {
-      e.preventDefault(); // also stops the browser's back-navigation
-      if (e.repeat || !handlers.isActive()) return; // one action per press; only while playing
-      const action: DeleteAction = e.metaKey ? 'to-line-start' : e.altKey ? 'word-left' : 'backward';
-      handlers.delete(action);
-      return;
-    }
-
-    // Forward-delete (fn+Delete, or the dedicated Delete key) — mirrors Backspace.
-    if (e.key === 'Delete') {
-      e.preventDefault();
-      if (e.repeat || !handlers.isActive()) return;
-      const action: DeleteAction = e.metaKey ? 'to-line-end' : e.altKey ? 'word-right' : 'forward';
-      handlers.delete(action);
-      return;
-    }
-
     if ((e.key === 'm' || e.key === 'M') && !e.metaKey && !e.ctrlKey) {
       e.preventDefault();
       if (!e.repeat) handlers.mute();
-      return;
+      return true;
     }
-
-    // Alt(Option) + ↑/↓ → move the row(s) up/down (KDA-60). Plain Alt only —
-    // Cmd falls through to doc-start/end, Shift to line-selection. Repeats while
-    // held, gated by the same held-over/active rules as movement below.
-    if (e.altKey && !e.metaKey && !e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
-      e.preventDefault();
-      if (!handlers.isActive()) {
-        heldOver.add(e.code);
-        repeater.stop();
-        return;
-      }
-      if (heldOver.has(e.code)) return;
-      const dir = e.key === 'ArrowUp' ? -1 : 1;
-      repeater.start(e.code, () => {
-        if (!handlers.isActive()) {
-          repeater.stop();
-          return;
-        }
-        handlers.moveRow(dir);
-      });
-      return;
+    if (active) return false; // the keys below only mean something on a screen
+    if (e.key === 'Escape') {
+      if (!e.repeat) handlers.menu();
+      return true;
     }
+    if (e.key === 'Tab' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault(); // keep focus on the game
+      if (!e.repeat) handlers.cycleMode();
+      return true;
+    }
+    if (/^[1-9]$/.test(e.key) && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (!e.repeat) handlers.pickMode(Number(e.key) - 1);
+      return true;
+    }
+    return false;
+  };
 
-    const action = movementFor(e);
-    if (!action) return;
-    e.preventDefault(); // arrows would otherwise scroll the page
-    // Not playing: remember the key as held-over and disarm any repeat. A key
-    // pressed/held during the countdown must never carry into the revealed board.
+  const onKeyDown = (e: KeyboardEvent) => {
+    const keymap = handlers.keymap();
+
+    // Not playing: disarm any repeat. A key pressed/held during the countdown
+    // must never carry into the revealed board — its press is dropped here, and
+    // the OS key-repeats that keep arriving once play begins are ignored below.
     if (!handlers.isActive()) {
-      heldOver.add(e.code);
       repeater.stop();
+      if (globalKey(e, false)) return;
+      // A gameplay key on a screen does nothing, but still must not scroll the
+      // page (arrows) or navigate back (Backspace).
+      if (keymap.resolve(e)) e.preventDefault();
       return;
     }
-    // A key still down from before play began: wait for a real release+press.
-    if (heldOver.has(e.code)) return;
-    // Same chords; Shift extends the selection instead of moving (both repeat).
-    const action$ = e.shiftKey
-      ? () => handlers.select(action)
-      : () => handlers.move(action);
-    // Guard each repeat fire: if play stopped (stage clear, countdown, etc.),
-    // self-cancel so the timer can't leak into the next stage and silently
-    // extend a selection from caret (0,0) once play resumes.
-    const fire = () => {
-      if (!handlers.isActive()) {
-        repeater.stop();
-        return;
-      }
-      action$();
+
+    // Playing: the mode's keymap gets first refusal, so a mode may claim a key
+    // that is otherwise global.
+    const action = keymap.resolve(e);
+    if (!action) {
+      globalKey(e, true);
+      return;
+    }
+    e.preventDefault();
+    // One action per physical press: the OS key-repeat is ignored (our own clock
+    // repeats), so a key still down from before play began waits for a real
+    // release + press.
+    if (e.repeat) return;
+
+    // Guard each fire: if play stopped (stage clear, countdown, etc.), self-cancel
+    // so the timer can't leak into the next stage once play resumes.
+    const fire = (): boolean => {
+      if (!handlers.isActive()) return false;
+      return action.fire();
     };
-    repeater.start(e.code, fire);
+    if (action.passive) fire();
+    else repeater.start(e.code, fire);
   };
 
   const onKeyUp = (e: KeyboardEvent) => {
-    heldOver.delete(e.code); // released → a fresh press is honored again
     repeater.release(e.code);
   };
   const onBlur = () => repeater.stop();

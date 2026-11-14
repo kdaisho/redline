@@ -14,6 +14,7 @@ import {
   LH,
   normalizeSelection,
 } from './state.ts';
+import { type Mode, MODES, modeInfo } from './modes.ts';
 
 /** Terminal palette (spec §7): pastel red/blue text on a stark editor pane. */
 export const COLORS = {
@@ -120,6 +121,7 @@ export interface Scene {
   hud: HudModel;
   fx: Fx;
   phase: Phase;
+  mode: Mode; // active control mode (#8) → HUD label, start-screen picker + key help
   overReason: 'strikes' | 'timeout'; // why the run ended → game-over subtitle (KDA-59)
   best: number; // best score ever (localStorage), shown on start/over screens
   isNewBest: boolean; // this run beat the stored best
@@ -193,7 +195,7 @@ export function render(
   ctx.fillStyle = COLORS.bg;
   ctx.fillRect(0, 0, width, height);
 
-  drawHud(ctx, width, scene.hud, scene.fx, nowMs);
+  drawHud(ctx, width, scene.hud, scene.fx, scene.mode, nowMs);
 
   // editor pane: filled interior, current-line band, then the hard frame stroke
   ctx.fillStyle = COLORS.panel;
@@ -219,7 +221,7 @@ export function render(
   drawClearedFlash(ctx, width, height, scene.fx, nowMs);
   drawGoFlash(ctx, width, height, scene.fx, nowMs);
 
-  if (scene.phase === 'start') drawStartScreen(ctx, width, height, scene.best);
+  if (scene.phase === 'start') drawStartScreen(ctx, width, height, scene.best, scene.mode);
   else if (scene.phase === 'countdown') drawCountdown(ctx, width, height, scene.countdownNum);
   // Hold on the cleared board briefly before the text backdrop pops in (KDA-48).
   else if (scene.phase === 'cleared' && nowMs - scene.fx.clearedFlashMs >= CLEARED_BACKDROP_DELAY_MS)
@@ -387,52 +389,94 @@ function statRow(
   ctx.fillText(value, cx + 10, y);
 }
 
-/** Start screen: title, the rules, controls, and the best score so far. */
+/** Start screen: title, the rules, the mode picker, that mode's keys, and its best score. */
 function drawStartScreen(
   ctx: CanvasRenderingContext2D,
   width: number,
   height: number,
   best: number,
+  mode: Mode,
 ): void {
   ctx.fillStyle = 'rgba(7,10,14,0.86)';
   ctx.fillRect(0, 0, width, height);
 
   const cx = width / 2;
+  const cy = height / 2;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
   ctx.fillStyle = COLORS.text;
   ctx.font = mono(56, true);
-  ctx.fillText('REDLINE', cx, height / 2 - 96);
+  ctx.fillText('REDLINE', cx, cy - 150);
 
   ctx.font = mono(14);
   ctx.fillStyle = COLORS.red;
-  ctx.fillText('RED = DELETE', cx - 70, height / 2 - 52);
+  ctx.fillText('RED = DELETE', cx - 70, cy - 106);
   ctx.fillStyle = COLORS.blue;
-  ctx.fillText('BLUE = KEEP', cx + 70, height / 2 - 52);
+  ctx.fillText('BLUE = KEEP', cx + 70, cy - 106);
 
+  drawModePicker(ctx, cx, cy - 58, mode);
+
+  // Key help for the selected mode, then the rules common to every mode.
+  ctx.textAlign = 'center';
   ctx.fillStyle = COLORS.hudDim;
   ctx.font = mono(12);
   const lines = [
-    'move  ← →   ·  word  ⌥← ⌥→   ·  line  ⌘← ⌘→   ·  ↑ ↓',
-    'delete left  ⌫  ⌥⌫  ⌘⌫     ·     delete right  ⌦  ⌥⌦  ⌘⌦',
-    'select  ⇧ + move    ·    move row  ⌥↑ ⌥↓    ·    mute  M',
+    ...modeInfo(mode).startHelp,
     'clear every red to advance · two mistakes or the clock ends the run',
   ];
-  lines.forEach((t, i) => ctx.fillText(t, cx, height / 2 - 8 + i * 22));
+  lines.forEach((t, i) => ctx.fillText(t, cx, cy + 4 + i * 22));
+  const below = cy + 4 + lines.length * 22;
 
   if (best > 0) {
     ctx.fillStyle = COLORS.hudDim;
     ctx.font = mono(13);
-    ctx.fillText(`BEST  ${best}`, cx, height / 2 + 66);
+    ctx.fillText(`${modeInfo(mode).label} BEST  ${best}`, cx, below + 16);
   }
 
   ctx.fillStyle = COLORS.text;
   ctx.font = mono(14, true);
-  ctx.fillText('PRESS ENTER TO START', cx, height / 2 + 104);
+  ctx.fillText('PRESS ENTER TO START', cx, below + 54);
 
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
+}
+
+/**
+ * The mode picker row (#8): one hard-edged box per mode, labelled with the digit
+ * that picks it. The selected mode is bright and outlined; a mode that is listed
+ * but not playable yet is dimmed and tagged.
+ */
+function drawModePicker(ctx: CanvasRenderingContext2D, cx: number, y: number, mode: Mode): void {
+  const PAD = 14; // inner horizontal padding of a box
+  const GAP = 12; // between boxes
+  const H = 30;
+  ctx.font = mono(14, true);
+  const labels = MODES.map((m, i) => `${i + 1}  ${m.label}${m.available ? '' : '  · SOON'}`);
+  const widths = labels.map((l) => Math.ceil(ctx.measureText(l).width) + PAD * 2);
+  const total = widths.reduce((a, b) => a + b, 0) + GAP * (MODES.length - 1);
+
+  let x = Math.round(cx - total / 2);
+  ctx.textAlign = 'left';
+  MODES.forEach((m, i) => {
+    const selected = m.id === mode;
+    if (selected) {
+      ctx.fillStyle = COLORS.selection;
+      ctx.fillRect(x, y - H / 2, widths[i], H);
+    }
+    ctx.strokeStyle = selected ? COLORS.selectionEdge : COLORS.strikeOff;
+    ctx.lineWidth = selected ? 1.5 : 1;
+    ctx.strokeRect(x + 0.5, y - H / 2 + 0.5, widths[i] - 1, H - 1);
+    ctx.fillStyle = selected ? COLORS.text : m.available ? COLORS.hudDim : COLORS.strikeOff;
+    ctx.font = mono(14, true);
+    ctx.fillText(labels[i], x + PAD, y + 1);
+    x += widths[i] + GAP;
+  });
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COLORS.hudDim;
+  ctx.font = mono(11);
+  ctx.fillText('MODE  ·  press the number, or TAB, to switch', cx, y + H / 2 + 14);
 }
 
 /** Stage-clear celebration: cleared banner, running totals, advance prompt. */
@@ -500,7 +544,7 @@ function drawGameOver(ctx: CanvasRenderingContext2D, width: number, height: numb
   y += 26;
   statRow(ctx, cx, y, 'TIME', formatTime(scene.hud.timeMs), COLORS.text);
   y += 26;
-  statRow(ctx, cx, y, 'BEST', String(scene.best), scene.isNewBest ? COLORS.blue : COLORS.hudDim);
+  statRow(ctx, cx, y, `${modeInfo(scene.mode).label} BEST`, String(scene.best), scene.isNewBest ? COLORS.blue : COLORS.hudDim);
 
   ctx.textAlign = 'center';
   if (scene.isNewBest) {
@@ -511,7 +555,7 @@ function drawGameOver(ctx: CanvasRenderingContext2D, width: number, height: numb
 
   ctx.fillStyle = COLORS.text;
   ctx.font = mono(14, true);
-  ctx.fillText('PRESS ENTER TO RESTART', cx, height / 2 + 104);
+  ctx.fillText('PRESS ENTER TO RESTART  ·  ESC FOR MENU', cx, height / 2 + 104);
 
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
@@ -540,7 +584,7 @@ function drawWinScreen(ctx: CanvasRenderingContext2D, width: number, height: num
   y += 26;
   statRow(ctx, cx, y, 'TIME', formatTime(scene.hud.timeMs), COLORS.text);
   y += 26;
-  statRow(ctx, cx, y, 'BEST', String(scene.best), scene.isNewBest ? COLORS.blue : COLORS.hudDim);
+  statRow(ctx, cx, y, `${modeInfo(scene.mode).label} BEST`, String(scene.best), scene.isNewBest ? COLORS.blue : COLORS.hudDim);
 
   ctx.textAlign = 'center';
   if (scene.isNewBest) {
@@ -551,7 +595,7 @@ function drawWinScreen(ctx: CanvasRenderingContext2D, width: number, height: num
 
   ctx.fillStyle = COLORS.text;
   ctx.font = mono(14, true);
-  ctx.fillText('PRESS ENTER TO RESTART', cx, height / 2 + 104);
+  ctx.fillText('PRESS ENTER TO RESTART  ·  ESC FOR MENU', cx, height / 2 + 104);
 
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
@@ -563,6 +607,7 @@ function drawHud(
   width: number,
   hud: HudModel,
   fx: Fx,
+  mode: Mode,
   nowMs: number,
 ): void {
   const y = FRAME_PAD + 8;
@@ -629,6 +674,15 @@ function drawHud(
     ctx.font = mono(18);
     ctx.fillText(formatCountdown(hud.stageRemainingMs), limitX, y + 14);
   }
+
+  // MODE (#8) — the active control mode, right of LIMIT
+  const modeX = FRAME_PAD + 570;
+  ctx.fillStyle = COLORS.hudDim;
+  ctx.font = mono(11);
+  ctx.fillText('MODE', modeX, y);
+  ctx.fillStyle = COLORS.text;
+  ctx.font = mono(18);
+  ctx.fillText(modeInfo(mode).label, modeX, y + 14);
 
   // SOUND (mute indicator, KDA-46) — sits in the open space before STRIKES
   const sndX = FRAME_PAD + 360;
