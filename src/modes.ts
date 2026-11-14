@@ -34,7 +34,9 @@ const GAME_KEYS: HelpSection = {
   rows: [
     ['Enter', 'start · next stage · restart'],
     ['F1', 'this help (pauses the clock, hides the board)'],
-    ['F2', 'mute / unmute'],
+    ['F2', 'mute / unmute everything'],
+    ['F3 F4 · F6 F7', 'volume down / up: music · sound effects'],
+    ['⇧F3 · ⇧F6', 'music off / on · sound effects off / on'],
     ['Esc', 'end screen: back to the menu (change mode)'],
     ['1  2  Tab', 'start screen: pick the mode'],
   ],

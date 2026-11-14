@@ -44,8 +44,10 @@ in every mode; only the keys differ.
 - **Best scores are per mode** (§6).
 
 Global keys (every mode): `Enter` / `Space` start, advance, restart · `M` or `F2`
-mute · `F1` help. A mode may claim a global typing key while playing (Vim claims
-`M`, `Enter`, `Space`, `Esc`); `F1` / `F2` can never be claimed.
+mute · `F1` help · `F3` / `F4` music volume down / up · `F6` / `F7` SFX volume
+down / up (`Shift` + one of them: that bus off / on) — see §9. A mode may claim a
+global typing key while playing (Vim claims `M`, `Enter`, `Space`, `Esc`); the
+function keys can never be claimed.
 
 **Help screen (`F1`)**, on the start screen or mid-stage: every key of the active
 mode. Mid-stage it is a pause — both clocks stop and the board is hidden.
@@ -315,11 +317,95 @@ scores as the command that runs at the target (`dr…iw` word, `dr…d` line).
   global keys), `keymaps/<mode>.ts` (one keymap per mode over the shared field actions),
   `vim.ts` (the Vim engine — pure, no DOM), `flash.ts` (flash jump matching and
   labels), `miniai.ts` (mini.ai text objects), `render.ts`, `game.ts` (loop, stages,
-  scoring, strikes), `stages.ts` (board definitions), `main.ts`.
+  scoring, strikes), `stages.ts` (board definitions), `audio.ts` + `audio/` (§9),
+  `main.ts`.
 - Tests: **vitest** (`pnpm test`), headless — `vim.test.ts` (engine),
   `vim-lazyvim.test.ts` (flash, mini.ai, row moves, LazyVim remaps, help-screen
-  fit) and `vim-play.test.ts` (key controller wiring, and a bot clearing all 50
-  stages with Vim keys).
+  fit), `vim-play.test.ts` (key controller wiring, and a bot clearing all 50
+  stages with Vim keys) and `audio/audio.test.ts` (§9).
+
+## 9. Audio (#12, #13, #14)
+All sound is synthesised with the Web Audio API — no asset files. The sets were
+picked by ear from two prototype pages; the note data, synthesis parameters and
+gains in `audio/tracks.ts`, `audio/bgm.ts` and `audio/sfx.ts` are ports of those
+pages and must not be retuned by eye.
+
+**Music** — eight original tracks, one per slot:
+
+| Slot | Track | Tempo | Loop |
+|---|---|---|---|
+| Title / start screen | Cold Boot | 138 | 27.8 s |
+| Stages 1–10 | Green Diff | 150 | 38.4 s |
+| Stages 11–20 | Hot Path | 156 | 36.9 s |
+| Stages 21–30 | Race Condition | 164 | 46.8 s |
+| Stages 31–40 | Stack Overflow | 172 | 44.7 s |
+| Stages 41–50 | Redline | 180 | 42.7 s |
+| Game over | Core Dump | 108 | 17.8 s |
+| Win | Ship It | 160 | 36.0 s |
+
+- A tier's track plays on through the countdown and the stage-cleared screen; it
+  changes (short fade out, then the next track) only when the tier does, during
+  the countdown of stages 11, 21, 31, 41. The help screen does not stop it.
+- Game over and win let their SFX cue play first; the theme comes in under its
+  tail. `Esc` back to the menu returns to the title theme.
+- Tracks always fade in and out — never a hard cut. A track restarts from its top.
+- Autoplay: a browser only lets audio start after a key or pointer press, so the
+  title theme begins with the first key pressed on the page.
+- While the tab is hidden the audio is ducked and the context suspended (a
+  background tab's timers are too slow for the sequencer); it resumes in place.
+- Music that cannot be heard (muted, or volume 0) is not sequenced; turned back
+  on, the current screen's track starts from its top.
+
+**Sound effects** — the "Halo" set, one sound per action (31):
+
+| Action | Fires when |
+|---|---|
+| `moveChar` `moveWord` `moveLineEdge` `moveLine` | the caret moves: one character · a word (or any longer hop on a row) · to a row's start / end, or the first / last row (direction = which end) · to another row (direction = up / down). A move that hits a wall is silent in Standard |
+| `selExtend` · `selClear` | the selection grows or shrinks (Standard `⇧` + move; Vim: a move in a Visual mode) · a selection is dropped by a plain move or collapsed onto its anchor (Vim: `Esc` cancels a half-typed command) |
+| `delChar` `delWord` `delLine` `delSelection` | a delete that removes characters from one row, by its chord (§4); word / line / selection scale with the characters removed (spaces included) |
+| `delBig` | a delete that takes characters from two or more rows (multi-row selection, `3dd`, `dj`, a Visual Block …), scaled the same way |
+| `rowCollapse` | a row closes up: alone when two rows are joined without removing a character (`⌫` at column 0), just after the delete sound when one row is deleted whole (`dd`) |
+| `rowMove` | the row (or the selected rows) moved up / down |
+| `comboUp` | a clean red delete, just behind the delete sound; its pitch climbs with the combo level. Not played on the delete that clears the stage |
+| `comboBreak` | a running combo is lost: the 1.5 s window lapses (heard at that moment), or a mistake that is not the final strike |
+| `mistake` → `strike` | a delete removed a blue block: the mistake replaces the delete sound, the strike follows 0.14 s later |
+| `gameOver` | the run ends: 0.45 s after the final strike's `mistake`, or 0.7 s after `timeUp` |
+| `timeWarning` · `timeUp` | once per second over a stage's last five seconds (at 5, 4, 3, 2, 1 s left) · the stage limit runs out |
+| `countdownTick` · `countdownGo` | each countdown digit (3, 2, 1) · the board is revealed |
+| `stageStart` | a stage's countdown begins (a beat after `menuConfirm` on a fresh run) |
+| `stageClear` · `runWin` | the last red of a stage is deleted · stage 50's clear is confirmed |
+| `menuMove` · `menuConfirm` | mode picker change, help open / close, `Esc` back to the menu, a volume step · `Enter` starting a run |
+| `muteToggle` | master mute, on both edges (the mute cue is heard before the silence) |
+| `vimMode` | Vim changed mode without deleting (to Normal, or to any Visual mode) |
+| `vimPending` | a Vim command is half-typed: operator, count, prefix (`g` `f` `i` …), flash or search text |
+| `vimInvalid` | a Vim key did nothing: not part of this Vim, a motion that cannot move, no match / pattern not found |
+
+- The Vim engine stays pure: the game compares its status before and after each
+  key and derives the sound from that (`audio/cues.ts`).
+- **Held keys:** movement, selection, row-move, menu and Vim key sounds share one
+  lane — a sound may not start until the previous one has had its length
+  (35–110 ms). One arriving up to 20 ms early is moved onto the slot, anything
+  earlier is dropped; so a held key (45 ms repeat) plays every repeat, evenly,
+  and nothing stacks. Other sounds only refuse to retrigger themselves within
+  30 ms. At most 96 voices are alive at once (the lane stops at 32).
+
+**Mix** — one AudioContext, one chain:
+`music (its own limiter + soft clip) → music volume` and
+`SFX (its own gain + limiter) → SFX volume`, both into `master (mute) → final
+limiter → soft clip → output`. Each bus keeps the dynamics it was approved with;
+nothing bypasses the final limiter.
+
+- `M` (Standard) / `F2`: master mute. `F3` `F4`: music volume, `F6` `F7`: SFX
+  volume, steps 0–10 (defaults: music 6, SFX 7; step 0 is off). `Shift` + a volume
+  key turns that bus off / on without losing its step. The HUD's SOUND readout
+  shows both (`♪ M6 S7`, `-` for a bus that is off, `✕ MUTED`).
+- Remembered in localStorage: `redline.muted` (master), `redline.music.volume`,
+  `redline.music.muted`, `redline.sfx.volume`, `redline.sfx.muted`.
+- Tests (`audio/audio.test.ts`, headless against a checking stub AudioContext):
+  every track compiles to whole bars with finite pitches and the loop lengths
+  above; the stage → track mapping and the music transitions; all 31 sounds
+  schedule with no non-finite or past time and no exponential ramp to ≤ 0; the
+  held-key lane; the action → sound mappings; the settings.
 
 ---
 

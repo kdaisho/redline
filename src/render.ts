@@ -114,6 +114,7 @@ export interface HudModel {
   strikes: number;
   maxStrikes: number;
   muted: boolean; // audio mute state (KDA-46)
+  soundText?: string; // SOUND readout when not muted, e.g. `♪ M6 S7` (#14); default `♪ ON`
   stageLimitMs: number; // per-stage time budget (KDA-59); 0 before a run starts
   stageRemainingMs: number; // time left on the current stage's countdown
 }
@@ -828,7 +829,7 @@ function drawHud(
   ctx.fillText('SOUND', sndX, y);
   ctx.fillStyle = hud.muted ? COLORS.hudDim : COLORS.text;
   ctx.font = mono(18);
-  ctx.fillText(hud.muted ? '✕ MUTED' : '♪ ON', sndX, y + 14);
+  ctx.fillText(hud.muted ? '✕ MUTED' : (hud.soundText ?? '♪ ON'), sndX, y + 14);
 
   // TIME (right-aligned)
   const timeStr = formatTime(hud.timeMs);

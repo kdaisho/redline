@@ -57,6 +57,10 @@ export interface InputHandlers {
   mute(): void;
   /** F1 — open / close the help screen for the active mode. */
   help(): void;
+  /** F3 / F4 (music) and F6 / F7 (SFX) — one volume step down (-1) / up (+1). Repeats while held. */
+  volume?(bus: 'music' | 'sfx', delta: -1 | 1): void;
+  /** Shift + a volume key — mute / un-mute that bus only. */
+  busMute?(bus: 'music' | 'sfx'): void;
   /** Escape — back to the start screen from an end screen. */
   menu(): void;
   /** A digit key on a screen: pick the mode at this 0-based picker index. */
@@ -71,6 +75,14 @@ export interface InputHandlers {
    */
   isActive(): boolean;
 }
+
+/** The volume keys: function keys, so they work in every mode and phase (#14). F5 is left to the browser. */
+const VOLUME_KEYS: Record<string, [bus: 'music' | 'sfx', delta: -1 | 1]> = {
+  F3: ['music', -1],
+  F4: ['music', 1],
+  F6: ['sfx', -1],
+  F7: ['sfx', 1],
+};
 
 /**
  * Fires an action once on press, then repeats while the key is held (if the
@@ -141,13 +153,21 @@ export function attachInput(handlers: InputHandlers, target: Window = window): (
 
   const onKeyDown = (e: KeyboardEvent) => {
     // Function keys are the game's own in every mode and every phase — no mode
-    // can claim them, so help and mute are always reachable.
+    // can claim them, so help, mute and the volumes are always reachable.
     if (e.key === 'F1' || e.key === 'F2') {
       e.preventDefault();
       if (!e.repeat) {
         if (e.key === 'F1') handlers.help();
         else handlers.mute();
       }
+      return;
+    }
+    const vol = VOLUME_KEYS[e.key];
+    if (vol) {
+      e.preventDefault();
+      if (e.shiftKey) {
+        if (!e.repeat) handlers.busMute?.(vol[0]);
+      } else handlers.volume?.(vol[0], vol[1]);
       return;
     }
 
