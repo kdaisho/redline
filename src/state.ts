@@ -1,10 +1,10 @@
 /**
  * REDLINE field model — the single source of truth for the board (spec §1).
  *
- * The field is a grid of fixed-size blocks. Each line is a row of blocks; a
- * block is red, blue, or a space (null). A "word" (bar) is a maximal run of
- * same-color blocks. The caret sits *before* `block[col]`, so a line of N
- * blocks has N+1 caret columns (0..N).
+ * The field is text on a fixed monospace grid (#6). Each line is a row of
+ * blocks; a block is one character that is red, blue, or a space (null). A
+ * colour "run" is a maximal stretch of same-colour characters. The caret sits
+ * *before* `block[col]`, so a line of N blocks has N+1 caret columns (0..N).
  *
  * This module is pure data + pure queries. Caret movement (KDA-35),
  * selection (KDA-36), and deletion (KDA-37) build their actions on these
@@ -25,9 +25,13 @@ export const MAX_WORD = 100;
 // ── Types ──────────────────────────────────────────────────────────────────
 export type Color = 'red' | 'blue';
 
-/** A single grid cell. `null` color = space (caret can rest, nothing to delete). */
+/**
+ * A single grid cell: one character. `null` color = space (caret can rest,
+ * nothing to delete) and its `ch` is `' '`. Colored blocks never hold a space.
+ */
 export interface Block {
   color: Color | null;
+  ch: string;
 }
 
 export type Line = Block[];
@@ -50,17 +54,17 @@ export interface FieldState {
 }
 
 // ── Board builders (authoring helpers for stages.ts / tests) ─────────────────
-/** A run of `n` blocks of one color — a "word" (bar). */
-export function word(color: Color, n: number): Line {
-  return Array.from({ length: n }, () => ({ color }));
+/** A run of one color spelling `str`, one block per character (no spaces inside). */
+export function text(color: Color, str: string): Line {
+  return Array.from(str, (ch) => ({ color, ch }));
 }
 
 /** `n` space blocks (≥1 separates words). */
 export function spaces(n = 1): Line {
-  return Array.from({ length: n }, () => ({ color: null }));
+  return Array.from({ length: n }, () => ({ color: null, ch: ' ' }));
 }
 
-/** Concatenate runs/spaces into one line, e.g. `line(word('red',5), spaces(), word('blue',4))`. */
+/** Concatenate runs/spaces into one line, e.g. `line(text('red','crash()'), spaces(), text('blue','main()'))`. */
 export function line(...chunks: Line[]): Line {
   return chunks.flat();
 }
@@ -121,7 +125,7 @@ export function isSelectionEmpty(sel: Selection): boolean {
 }
 
 // ── Word-run boundaries (the "word" model primitive) ─────────────────────────
-// A word is a maximal run of same-color blocks; spaces are their own runs.
+// A run is a maximal stretch of same-color blocks; spaces are their own runs.
 // These power Alt-movement (KDA-35) and word-deletion (KDA-37) from one place.
 
 /** Start col (inclusive) of the run that block[col] belongs to. */
@@ -274,6 +278,7 @@ export interface RemovedCell {
   line: number;
   col: number;
   color: Color;
+  ch: string;
 }
 
 /** What a delete removed; `red`/`blue` feed scoring (KDA-39) and mistakes (KDA-38). */
@@ -296,10 +301,10 @@ function collectRemoved(
   const tally = (line: number, col: number, b: Block) => {
     if (b.color === 'red') {
       red++;
-      cells.push({ line, col, color: 'red' });
+      cells.push({ line, col, color: 'red', ch: b.ch });
     } else if (b.color === 'blue') {
       blue++;
-      cells.push({ line, col, color: 'blue' });
+      cells.push({ line, col, color: 'blue', ch: b.ch });
     }
   };
   if (start.line === end.line) {

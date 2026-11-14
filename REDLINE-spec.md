@@ -1,20 +1,24 @@
 # REDLINE — Game Spec
 
-A browser game styled as a harsh code editor. Lines hold colored "words" (bars of
-mini-blocks). **Red = enemy, delete it. Blue = friend, keep it.** Move a text caret
+A browser game styled as a harsh code editor. Lines hold code-like text in two
+colors. **Red = enemy, delete it. Blue = friend, keep it.** Move a text caret
 with macOS keyboard chords and clear every red as fast and cleanly as possible.
-No real letters. Sharp, edgy aesthetic. Faster + fewer mistakes = better.
+Sharp, edgy aesthetic. Faster + fewer mistakes = better.
 
 ## 1. Field model
 - Canvas, **hard rectangular** editor frame (no rounded corners anywhere). HUD above:
   `score`, `time`, `stage`, and a strike indicator.
-- Grid of blocks: fixed block width `BW`, line height `LH`.
-- **Line** = row; holds 1–N **words**, optionally separated by space blocks.
-- **Word (bar)** = run of same-color blocks, 1–100 wide, color ∈ {red, blue}. Lines may mix colors and runs may sit directly adjacent (no space between them).
+- Monospace grid: fixed block width `BW`, line height `LH`. One block = one character.
+- **Line** = row; holds 1–N **runs**, optionally separated by space blocks.
+- **Run** = stretch of same-color characters, 1–100 wide, color ∈ {red, blue}, spelled as
+  space-free code-like text (`cache.get(key)`, `items[0]`). Lines may mix colors and runs
+  may sit directly adjacent (no space between them).
+- **Each word is a single color.** Where two runs touch, the color changes on an
+  identifier/punctuation boundary (`render` + `(props)`), never inside an identifier.
 - Spaces are empty blocks; caret can rest on them, nothing to delete.
 
 ```
-block  = { color: 'red' | 'blue' | null }   // null = space
+block  = { color: 'red' | 'blue' | null, ch }   // null = space, ch = its character
 line   = block[]
 caret  = { line, col }                        // sits before block[col]
 select = { anchor:{line,col}, head:{line,col} } | null
@@ -68,7 +72,7 @@ For Alt-movement / Alt-selection / Alt-deletion, a **"word boundary"** is whites
 - A mistake resets the combo multiplier to ×1.
 
 ## 4. Scoring (combo + big-chord)
-- Base **+10 per red block** deleted.
+- Base **+10 per red character** deleted.
 - **Big-chord bonus:** per-block multiplier by chord — char ×1, word ×1.5, line ×2.
 - **Combo multiplier:** consecutive clean deletes with no pause >1.5s build ×1→×2→×4…;
   mistake or timeout resets to ×1.
@@ -91,7 +95,8 @@ For Alt-movement / Alt-selection / Alt-deletion, a **"word boundary"** is whites
   shadows/rounding. Red `#F5A0A0`-ish, blue `#7FB8F0`-ish, on a stark/terminal background (TBD).
 - Caret: sharp blinking grey block, one line tall.
 - Selection: hard-edged translucent highlight.
-- Delete feedback (the satisfying core): cleared blocks flash/snap out before the row
+- Field text: bold monospace glyphs in red/blue over a faint same-color cell backing.
+- Delete feedback (the satisfying core): cleared characters flash/snap out before the row
   collapses; combo counter pulses; strike flashes red.
 
 ## 8. Tech stack
