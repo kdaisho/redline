@@ -33,8 +33,8 @@ import { loadStage, stageBudgetMs, setMaxStageCols, setMaxStageRows } from '../s
 import { analyzeBoard } from '../src/metrics.ts';
 
 // The shipped canvas is 1500×1100 (main.ts) → render.playfieldCols/Rows give:
-const COLS = 107;
-const ROWS = 37;
+const COLS = 96;
+const ROWS = 23;
 const STAGES = 50;
 
 const args = process.argv.slice(2);
