@@ -301,14 +301,48 @@ scores as the command that runs at the target (`dr…iw` word, `dr…d` line).
   existed, so an older best carries over), other modes in `redline.best.<mode>`.
 
 ## 7. Rendering / theme
-- **Edgy/sharp:** hard rectangles, thin high-contrast strokes, monospace HUD, no
-  shadows/rounding. Red `#F5A0A0`-ish, blue `#7FB8F0`-ish, on a stark/terminal background (TBD).
-- Caret: sharp blinking grey block, one line tall (Standard: a bar before the
-  character; Vim: a block on the character).
-- Selection: hard-edged translucent highlight.
-- Field text: bold monospace glyphs in red/blue over a faint same-color cell backing.
-- Delete feedback (the satisfying core): cleared characters flash/snap out before the row
-  collapses; combo counter pulses; strike flashes red.
+The theme is **Phosphor** (chosen in #10, built in #11): an amber CRT terminal.
+
+- **Palette:** tube `#060A07`, amber `#FFB000` (chrome, caret, prompts), dim amber `#8A6200`
+  (labels, line numbers, rules), red `#FF5A3C`, blue `#3FB4C0`, white-hot `#FFF4E0`
+  (delete bloom, pulses, flash labels).
+- **Font:** VT323 (Google Fonts, loaded in `index.html`), all-caps readouts. Nothing is drawn
+  until it has loaded; if it never does, the system monospace stands in on the same grid.
+  VT323 advances 0.4 em with 0.08 em pixel rows, so the grid is `BW` 15 × `LH` 39 and field
+  glyphs are 37.5 px: exactly one cell wide, with 3 px pixel rows. The 1500×1100 canvas holds
+  96 × 23 cells — the generator's own maximum is 96 × 15, so boards are unchanged.
+- **Red vs blue never rely on hue alone:** red glows and is double-struck; blue is dim cyan
+  and bare.
+- **CRT:** scanlines every 3 px and a vignette over everything. Row baselines sit on
+  multiples of 3 so the scanlines fall between the font's pixel rows.
+- **Field:** zero-padded line numbers, `>` on the caret's row. Caret: Standard is a glowing
+  amber bar before the character (solid after input, then blinking); Vim is a steady glowing
+  amber block on the character, the lower half while an operator waits for its motion.
+- **Selection** (Standard's and Vim's Visual modes): true inverse video — a lit block in the
+  cell's own colour with the glyph dark; selected spaces and line breaks are dim amber.
+- **HUD:** two amber rows. Row 1: `REDLINE`, `STAGE 07`, `SCORE 001240` (+ the last gain,
+  fading), `COMBO X8` while a combo is alive (white-hot for a moment when it grows); on the
+  right `MODE`, `SND ON/OFF`, `STRIKES [ ][X]`, `T+mm:ss.cc`. Row 2: `LIMIT m:ss` and a gauge
+  of blocks that empties and turns from amber to red over the last half of the budget.
+- **Footer status line:** Standard shows `READY.` or `SELECT nn`; Vim shows `-- NORMAL --` etc.
+  (or the search prompt, a message, the flash text) followed by the pending keys; the right
+  side shows the caret as `L03 C17`.
+- **Delete** (the satisfying core): the gap is held open while the removed run blooms white,
+  squashes into one bright scanline and shrinks to a dot — a tube switching off (420 ms) —
+  then the row slides shut (120 ms). The model has already collapsed; only the picture lags.
+- **Strike:** the picture loses sync — rows jitter sideways under a red tint (380 ms), the
+  deleted blue flickers out in red, and an inverse `!! STRIKE 1/2 -- BLUE IS KEEP !!` banner
+  blinks in the footer (900 ms).
+- **Flash jump** (Vim `s`): the board dims, matches are lifted out again in their own colour
+  over an amber underline, labels are white-hot inverse cells.
+- **Screens:** start, game over and win replace the board with a 100 px glowing title
+  (amber; red for GAME OVER), dim copy and a `> PRESS ENTER … _` prompt with a blinking
+  cursor; the selected mode in the picker is an inverse amber block. The 3-2-1 countdown is a
+  250 px glowing digit, `GO` blooms white and swells as it fades, and a cleared stage
+  brightens the tube before `STAGE CLEARED` appears over the dimmed board. Help (F1) is two
+  columns of amber keys and dim descriptions.
+- **Cost:** no per-glyph `shadowBlur` at frame time. Glowing glyphs are rendered once into
+  per-style atlases and blitted; scanlines and vignette are one pre-rendered overlay.
 
 ## 8. Tech stack
 - **TypeScript + HTML5 Canvas**, **Vite**, **pnpm**. Single `requestAnimationFrame` loop.
