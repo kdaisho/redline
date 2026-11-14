@@ -1,7 +1,7 @@
 /**
  * Keyboard input (spec §2). This module is the shared controller: it owns the
  * window listeners, the hold-to-repeat clock, and the global keys (start / mute /
- * mode picker). What a key *does* on
+ * help / mode picker). What a key *does* on
  * the field is decided by the active mode's keymap (#8) — `keymaps/standard.ts`
  * and friends — each of which maps keys onto the same shared field actions.
  *
@@ -53,8 +53,10 @@ export interface InputHandlers {
   keymap(): Keymap;
   /** Enter/Space — start or restart a run (start & game-over screens). */
   confirm(): void;
-  /** M — toggle mute (KDA-46). */
+  /** M or F2 — toggle mute (KDA-46). F2 works in every mode; a mode may claim M. */
   mute(): void;
+  /** F1 — open / close the help screen for the active mode. */
+  help(): void;
   /** Escape — back to the start screen from an end screen. */
   menu(): void;
   /** A digit key on a screen: pick the mode at this 0-based picker index. */
@@ -138,6 +140,17 @@ export function attachInput(handlers: InputHandlers, target: Window = window): (
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
+    // Function keys are the game's own in every mode and every phase — no mode
+    // can claim them, so help and mute are always reachable.
+    if (e.key === 'F1' || e.key === 'F2') {
+      e.preventDefault();
+      if (!e.repeat) {
+        if (e.key === 'F1') handlers.help();
+        else handlers.mute();
+      }
+      return;
+    }
+
     const keymap = handlers.keymap();
 
     // Not playing: disarm any repeat. A key pressed/held during the countdown

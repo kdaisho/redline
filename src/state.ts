@@ -352,6 +352,65 @@ export function deleteRange(
   return { red, blue, chord, cells };
 }
 
+/**
+ * Remove whole rows `from..to` (inclusive) — a linewise delete (Vim `dd`, #7).
+ * Unlike `deleteRange`, the rows themselves vanish and nothing is joined. The
+ * field always keeps at least one row: removing every row leaves a single blank
+ * one. The caret lands at column 0 of the row that takes their place. Mutates
+ * `state`; returns the tally + removed cells.
+ */
+export function deleteRows(state: FieldState, from: number, to: number, chord: Chord): DeleteResult {
+  const lastRow = state.lines.length - 1;
+  const top = clamp(Math.min(from, to), 0, lastRow);
+  const bottom = clamp(Math.max(from, to), 0, lastRow);
+  const { red, blue, cells } = collectRemoved(
+    state.lines,
+    { line: top, col: 0 },
+    { line: bottom, col: state.lines[bottom].length },
+  );
+  state.lines.splice(top, bottom - top + 1);
+  if (state.lines.length === 0) state.lines.push([]);
+  state.caret = { line: Math.min(top, state.lines.length - 1), col: 0 };
+  state.select = null;
+  return { red, blue, chord, cells };
+}
+
+/**
+ * Remove columns `[fromCol, toCol)` from each of rows `from..to` (inclusive) — a
+ * blockwise delete (Vim Visual Block, #7). Rows shorter than the block lose only
+ * what they have; no rows are joined or removed. `toCol` may be `Infinity` ("to
+ * the end of every row"). The caret lands at the block's top-left corner.
+ * Mutates `state`; returns the tally + removed cells.
+ */
+export function deleteColumns(
+  state: FieldState,
+  from: number,
+  to: number,
+  fromCol: number,
+  toCol: number,
+  chord: Chord,
+): DeleteResult {
+  const lastRow = state.lines.length - 1;
+  const top = clamp(Math.min(from, to), 0, lastRow);
+  const bottom = clamp(Math.max(from, to), 0, lastRow);
+  let red = 0;
+  let blue = 0;
+  const cells: RemovedCell[] = [];
+  for (let l = top; l <= bottom; l++) {
+    const row = state.lines[l];
+    const end = Math.min(toCol, row.length);
+    if (end <= fromCol) continue;
+    const part = collectRemoved(state.lines, { line: l, col: fromCol }, { line: l, col: end });
+    red += part.red;
+    blue += part.blue;
+    cells.push(...part.cells);
+    row.splice(fromCol, end - fromCol);
+  }
+  state.caret = { line: top, col: Math.min(fromCol, state.lines[top].length) };
+  state.select = null;
+  return { red, blue, chord, cells };
+}
+
 function noop(chord: Chord): DeleteResult {
   return { red: 0, blue: 0, chord, cells: [] };
 }

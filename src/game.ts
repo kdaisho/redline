@@ -18,6 +18,8 @@ import {
 } from './state.ts';
 import { attachInput, type DeleteAction, type Keymap } from './input.ts';
 import { createStandardKeymap } from './keymaps/standard.ts';
+import { createVimKeymap } from './keymaps/vim.ts';
+import { Vim } from './vim.ts';
 import { type Mode, MODES, loadMode, saveMode } from './modes.ts';
 import { loadStage, stageBudgetMs, MAX_STAGE_INDEX } from './stages.ts';
 import { initAudio, loadMuted, toggleMute, playRedPop, playBlueError, playFanfare } from './audio.ts';
@@ -220,6 +222,10 @@ export class Game {
   // ── control mode (#8): picked on the start screen, fixed for the run ──
   private mode: Mode = loadMode();
   private readonly keymaps: Record<Mode, Keymap>;
+  private vim = new Vim(); // Vim mode's modal state (#7); fresh per run, reset per stage
+
+  // ── help screen (F1): covers the board and stops the clocks while open ──
+  private helpOpen = false;
 
   // ── pre-stage countdown (KDA-49) ──
   private countdownStartMs = 0; // performance.now() when the countdown began
@@ -245,7 +251,8 @@ export class Game {
       delete: (a) => this.onDelete(a),
       moveRow: (d) => this.onMoveRow(d),
     });
-    this.keymaps = { standard, vim: standard }; // Vim's own keymap lands with #7
+    const vim = createVimKeymap((key) => this.onVimKey(key));
+    this.keymaps = { standard, vim };
   }
 
   start(): void {
@@ -253,10 +260,11 @@ export class Game {
       keymap: () => this.keymaps[this.mode],
       confirm: () => this.onConfirm(),
       mute: () => this.onMute(),
+      help: () => this.onHelp(),
       menu: () => this.onMenu(),
       pickMode: (i) => this.onPickMode(i),
       cycleMode: () => this.onCycleMode(),
-      isActive: () => this.phase === 'playing',
+      isActive: () => this.phase === 'playing' && !this.helpOpen,
     });
     this.best = loadBest(this.mode);
     this.muted = loadMuted();
@@ -273,6 +281,10 @@ export class Game {
   /** Enter/Space: start a run, advance from a cleared stage, or restart from game over. */
   private onConfirm(): void {
     initAudio(); // unlock/resume the AudioContext on this user gesture (autoplay policy)
+    if (this.helpOpen) {
+      this.closeHelp();
+      return;
+    }
     if (this.phase === 'playing' || this.phase === 'countdown') return;
     if (this.phase === 'cleared') {
       this.advanceStage();
@@ -281,9 +293,39 @@ export class Game {
     this.beginRun(); // from 'start' or 'over'
   }
 
-  /** M: toggle mute and mirror it for the HUD. */
+  /** M / F2: toggle mute and mirror it for the HUD. */
   private onMute(): void {
     this.muted = toggleMute();
+  }
+
+  /**
+   * F1: toggle the help screen — on the start screen, or mid-stage. Mid-stage it
+   * is a pause: both clocks stop and the board is hidden behind the help, so it
+   * cannot be used to study the field for free.
+   */
+  private onHelp(): void {
+    if (this.helpOpen) {
+      this.closeHelp();
+      return;
+    }
+    if (this.phase !== 'start' && this.phase !== 'playing') return;
+    this.helpOpen = true;
+    if (this.phase === 'playing') {
+      const now = performance.now();
+      this.clock.pause(now);
+      this.stageClock.pause(now);
+    }
+  }
+
+  private closeHelp(): void {
+    if (!this.helpOpen) return;
+    this.helpOpen = false;
+    if (this.phase === 'playing') {
+      const now = performance.now();
+      this.clock.resume(now);
+      this.stageClock.resume(now);
+      this.lastInputMs = now;
+    }
   }
 
   /** 1, 2, … on the start screen: pick a mode by its picker position. */
@@ -301,7 +343,7 @@ export class Game {
 
   /** Switch mode (start screen only — a run is played in one mode) and remember it. */
   private setMode(mode: Mode): void {
-    if (this.phase !== 'start' || mode === this.mode) return;
+    if (this.phase !== 'start' || this.helpOpen || mode === this.mode) return;
     if (!MODES.find((m) => m.id === mode)?.available) return;
     this.mode = mode;
     saveMode(mode);
@@ -310,10 +352,15 @@ export class Game {
 
   /** Escape on an end screen: back to the start screen, where the mode can be changed. */
   private onMenu(): void {
+    if (this.helpOpen) {
+      this.closeHelp(); // Esc also closes the help screen
+      return;
+    }
     if (this.phase !== 'over' && this.phase !== 'won') return;
     this.phase = 'start';
     this.stageIndex = 0;
     this.field = loadStage(0, RUN_SEED);
+    this.vim = new Vim();
     this.stageLimitMs = 0; // hides the LIMIT readout until a run starts
     this.stageClock.reset();
     this.clock.reset();
@@ -327,6 +374,7 @@ export class Game {
   private beginRun(): void {
     this.stageIndex = 0;
     this.field = loadStage(0, RUN_SEED); // fixed seed → identical boards every run (KDA-59)
+    this.vim = new Vim(); // no search / repeat memory carried over from the last run
     this.stageLimitMs = stageBudgetMs(this.field.lines);
     this.stageClock.reset();
     this.scoreState = initialScore();
@@ -403,6 +451,19 @@ export class Game {
       this.goalCol = this.field.caret.col;
       this.markInput();
     }
+  }
+
+  /**
+   * Vim mode: hand one key to the engine. A key that completes a delete command
+   * goes through the same `applyDelete` as a Standard delete. Returns whether the
+   * key may auto-repeat while held (plain motions only).
+   */
+  private onVimKey(key: string): boolean {
+    if (this.phase !== 'playing') return false;
+    const outcome = this.vim.key(this.field, key);
+    this.markInput();
+    if (outcome.deleted) this.applyDelete(outcome.deleted);
+    return outcome.repeatable;
   }
 
   private onDelete(action: DeleteAction): void {
@@ -486,6 +547,7 @@ export class Game {
     }
     this.stageIndex++;
     this.field = loadStage(this.stageIndex, RUN_SEED);
+    this.vim.reset(); // Normal mode, nothing pending; `.` / search memory carries across stages
     this.stageLimitMs = stageBudgetMs(this.field.lines);
     // Reset the stage budget now (not at finishCountdown) so the LIMIT readout
     // and gauge show the fresh full budget during the countdown instead of the
@@ -553,6 +615,9 @@ export class Game {
       field: this.field,
       phase: this.phase,
       mode: this.mode,
+      vim:
+        this.mode === 'vim' ? { ...this.vim.status(), spans: this.vim.selection(this.field) } : null,
+      helpOpen: this.helpOpen,
       overReason: this.overReason,
       best: this.best.score,
       isNewBest: this.isNewBest,
