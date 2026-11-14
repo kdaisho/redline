@@ -11,8 +11,12 @@
  *      sequence. Archetype weights also shift with stage index — early stages
  *      lean classic-mixed, later stages lean chaotic.
  *
+ * Each run is then spelled as code-like text of exactly its width (#6,
+ * `codetext.ts`) — the shape decides difficulty, the text is what you read.
+ *
  * Zero-space adjacency (red touching blue) becomes more likely as difficulty
- * climbs, forcing more precise selection. Generation is deterministic per
+ * climbs, forcing more precise selection. Touching runs always meet at an
+ * identifier/punctuation boundary, so every word is a single colour. Generation is deterministic per
  * `(index, runSeed)`. `loadStage` always returns a fresh, independent field —
  * deletion ops mutate blocks, so presets must never be shared between runs.
  */
@@ -20,11 +24,12 @@ import {
   type Line,
   type FieldState,
   type Color,
-  word,
+  text,
   spaces,
   line,
   createField,
 } from './state.ts';
+import { codeText, charClass, type CharClass } from './codetext.ts';
 
 /** A stage board = its preset lines. */
 export type Stage = Line[];
@@ -47,24 +52,27 @@ export function setMaxStageRows(rows: number): void {
 }
 
 // ── authored intro ───────────────────────────────────────────────────────
+const red = (str: string): Line => text('red', str);
+const blue = (str: string): Line => text('blue', str);
+
 const AUTHORED: Stage[] = [
   // Stage 1 — short, mostly red, one easy blue to leave alone.
   [
-    line(word('red', 6)),
-    line(word('red', 5), spaces(2), word('blue', 4)),
+    line(red('debugger;')),
+    line(red('crash()'), spaces(2), blue('main()')),
   ],
   // Stage 2 — a blue trap wedged between reds; three rows.
   [
-    line(word('red', 6), spaces(1), word('blue', 4)),
-    line(word('blue', 4), spaces(1), word('red', 7)),
-    line(word('red', 5), spaces(1), word('blue', 4), spaces(1), word('red', 5)),
+    line(red('leak()'), spaces(1), blue('init()')),
+    line(blue('load()'), spaces(1), red('explode()')),
+    line(red('hack()'), spaces(1), blue('save()'), spaces(1), red('panic()')),
   ],
   // Stage 3 — denser, wider reds, traps on both sides.
   [
-    line(word('red', 8), spaces(1), word('blue', 4), spaces(1), word('red', 6)),
-    line(word('blue', 5), spaces(1), word('red', 7), spaces(1), word('blue', 4)),
-    line(word('red', 6), spaces(1), word('red', 5), spaces(1), word('blue', 4)),
-    line(word('blue', 4), spaces(1), word('red', 9)),
+    line(red('goto(fail)'), spaces(1), blue('sync()'), spaces(1), red('eval(x)')),
+    line(blue('open()'), spaces(1), red('corrupt()'), spaces(1), blue('done;')),
+    line(red('throw'), spaces(1), red('bomb()'), spaces(1), blue('exit;')),
+    line(blue('test()'), spaces(1), red('segfault()')),
   ],
 ];
 
@@ -186,7 +194,7 @@ function generateStage(index: number, runSeed: number): Stage {
     if (validate(board)) return board;
   }
   // Fallback (should not trigger in practice): a minimal solvable line.
-  return [line(word('red', Math.min(10, MAX_LINE_COLS)))];
+  return [line(text('red', codeText(Math.min(10, MAX_LINE_COLS), mulberry32(baseSeed))))];
 }
 
 function buildRow(arch: Archetype, maxCols: number, t: number, rand: () => number): Run[] {
@@ -255,25 +263,33 @@ function buildRow(arch: Archetype, maxCols: number, t: number, rand: () => numbe
 }
 
 /**
- * Join runs into a Line, inserting per-gap spacing. With probability
- * `pAdjacent` a gap is zero (runs touch); otherwise it's 1 or 2 spaces. The
- * total never exceeds `maxCols`; if budget runs out, trailing runs drop.
+ * Join runs into a Line, inserting per-gap spacing and spelling each run as
+ * code-like text. With probability `pAdjacent` a gap is zero (runs touch);
+ * otherwise it's 1 or 2 spaces. A run that touches its left neighbour starts in
+ * the opposite character class from where that neighbour ended, so the colour
+ * change always falls on an identifier/punctuation boundary. The total never
+ * exceeds `maxCols`; if budget runs out, trailing runs drop.
  */
 function linify(runs: Run[], pAdjacent: number, rand: () => number, maxCols: number): Line {
-  if (runs.length === 0) return line(word('red', 1));
+  if (runs.length === 0) return line(text('red', codeText(1, rand)));
   const chunks: Line[] = [];
   let used = 0;
+  let prevEnd: CharClass | null = null; // class of the last char placed; null after a gap
   for (let i = 0; i < runs.length; i++) {
     if (i > 0) {
       const gap = rand() < pAdjacent ? 0 : 1 + Math.floor(rand() * 2);
       if (gap > 0 && used + gap < maxCols) {
         chunks.push(spaces(gap));
         used += gap;
+        prevEnd = null;
       }
     }
     const w = Math.min(runs[i].width, maxCols - used);
     if (w <= 0) break;
-    chunks.push(word(runs[i].color, w));
+    const startClass: CharClass = prevEnd === 'word' ? 'punct' : 'word';
+    const str = codeText(w, rand, startClass);
+    chunks.push(text(runs[i].color, str));
+    prevEnd = charClass(str[str.length - 1]);
     used += w;
     if (used >= maxCols) break;
   }
@@ -323,7 +339,7 @@ function validate(board: Line[]): boolean {
 
 // ── helpers ──────────────────────────────────────────────────────────────
 function cloneStage(stage: Stage): Line[] {
-  return stage.map((ln) => ln.map((b): { color: Color | null } => ({ color: b.color })));
+  return stage.map((ln) => ln.map((b) => ({ color: b.color, ch: b.ch })));
 }
 
 function mulberry32(seed: number): () => number {

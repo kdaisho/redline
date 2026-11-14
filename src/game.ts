@@ -385,7 +385,7 @@ export class Game {
     // Snap-out flash for each cleared block (at its pre-collapse position).
     const now = performance.now();
     for (const cell of result.cells) {
-      this.flashes.push({ line: cell.line, col: cell.col, color: cell.color, startMs: now });
+      this.flashes.push({ line: cell.line, col: cell.col, color: cell.color, ch: cell.ch, startMs: now });
     }
 
     // Score the delete (combo reset on mistake/timeout handled inside).

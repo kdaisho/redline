@@ -15,7 +15,7 @@ import {
   normalizeSelection,
 } from './state.ts';
 
-/** Terminal palette (spec §7): pastel red/blue bars on a stark editor pane. */
+/** Terminal palette (spec §7): pastel red/blue text on a stark editor pane. */
 export const COLORS = {
   bg: '#070a0e', // stark terminal backdrop, around the frame
   panel: '#0c1018', // the editor pane interior
@@ -26,9 +26,9 @@ export const COLORS = {
   gutter: '#46566e', // line-number column
   currentLine: 'rgba(255,255,255,0.04)', // caret-row highlight
   red: '#f5a0a0',
-  redStroke: '#cf8181',
   blue: '#7fb8f0',
-  blueStroke: '#5e8fc4',
+  redTint: 'rgba(245,160,160,0.13)', // faint cell backing behind red text
+  blueTint: 'rgba(127,184,240,0.10)', // faint cell backing behind blue text
   caret: '#b2bdcd',
   selection: 'rgba(150,178,255,0.32)', // translucent overlay on top of bars
   selectionEdge: '#aebfff', // crisp bright outline so bounds are obvious
@@ -62,6 +62,14 @@ const FONT_SCALE = 1.2;
 const mono = (size: number, bold = false): string =>
   `${bold ? 'bold ' : ''}${Math.round(size * FONT_SCALE)}px ${MONO}`;
 
+// Field text (#6): one glyph per grid cell. Sized so a monospace advance
+// (~0.6em) fits inside BW; each glyph is centred on its cell, so the grid stays
+// exact whatever font the browser resolves.
+const GLYPH_PX = Math.floor((BW - 1) / 0.6);
+const GLYPH_FONT = `bold ${GLYPH_PX}px ${MONO}`;
+const CELL_TOP = 2; // cell backing inset within the line box
+const CELL_H = LH - 6;
+
 // effect timings (ms)
 const FLASH_MS = 180; // cleared-block snap-out
 const CARET_SOLID_MS = 500; // caret stays solid this long after input
@@ -76,6 +84,7 @@ export interface Flash {
   line: number;
   col: number;
   color: Color;
+  ch: string;
   startMs: number;
 }
 
@@ -200,7 +209,7 @@ export function render(
 
   if (!hidden) {
     drawBlocks(ctx, scene.field, geom);
-    // selection drawn AFTER blocks so the highlight reads clearly over the bars
+    // selection drawn AFTER blocks so the highlight reads clearly over the text
     if (scene.field.select) drawSelection(ctx, scene.field, scene.field.select, geom);
     drawFlashes(ctx, scene.fx, geom, nowMs);
     drawCaret(ctx, scene.field, scene.fx, nowMs, geom);
@@ -314,28 +323,33 @@ function drawGutter(
   ctx.textBaseline = 'top';
 }
 
-/** Cleared blocks expand and fade out with a bright core — the satisfying snap. */
+/** Cleared characters swell and fade out over a bright cell flash — the satisfying snap. */
 function drawFlashes(ctx: CanvasRenderingContext2D, fx: Fx, geom: FieldGeom, nowMs: number): void {
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
   for (const f of fx.flashes) {
     const p = (nowMs - f.startMs) / FLASH_MS;
     if (p < 0 || p >= 1) continue;
-    const bw = BW - 2;
-    const bh = LH - 6;
-    const cx = geom.ox + f.col * BW + 1 + bw / 2;
-    const cy = geom.oy + f.line * LH + 2 + bh / 2;
+    const cx = geom.ox + f.col * BW + BW / 2;
+    const cy = geom.oy + f.line * LH + CELL_TOP + CELL_H / 2;
     const scale = 1 + 0.8 * p;
-    const w = bw * scale;
-    const h = bh * scale;
+    const w = (BW - 2) * scale;
+    const h = CELL_H * scale;
 
-    ctx.globalAlpha = 1 - p;
+    // cell flash: colored block that expands and fades
+    ctx.globalAlpha = (1 - p) * 0.55;
     ctx.fillStyle = f.color === 'red' ? COLORS.red : COLORS.blue;
     ctx.fillRect(cx - w / 2, cy - h / 2, w, h);
 
-    ctx.globalAlpha = (1 - p) * 0.7;
+    // the glyph itself, white-hot, swelling as it goes
+    ctx.globalAlpha = 1 - p;
     ctx.fillStyle = '#ffffff';
-    ctx.fillRect(cx - w / 4, cy - h / 4, w / 2, h / 2);
+    ctx.font = `bold ${Math.round(GLYPH_PX * scale)}px ${MONO}`;
+    ctx.fillText(f.ch, cx, cy + 1);
   }
   ctx.globalAlpha = 1;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
 }
 
 /** Red full-frame flash on a strike, decaying quickly. */
@@ -678,21 +692,34 @@ function drawFrame(ctx: CanvasRenderingContext2D, frame: FrameRect): void {
 
 // ── field ────────────────────────────────────────────────────────────────
 function drawBlocks(ctx: CanvasRenderingContext2D, field: FieldState, geom: FieldGeom): void {
+  // Pass 1: faint cell backing, so runs read as solid stretches (diff-style).
   for (let r = 0; r < field.lines.length; r++) {
     const ln = field.lines[r];
+    const y = geom.oy + r * LH + CELL_TOP;
     for (let c = 0; c < ln.length; c++) {
       const color = ln[c].color;
       if (color === null) continue; // spaces draw nothing
-      const x = geom.ox + c * BW;
-      const y = geom.oy + r * LH;
-      // hard mini-block with a 1px gutter; thin high-contrast stroke
-      ctx.fillStyle = color === 'red' ? COLORS.red : COLORS.blue;
-      ctx.fillRect(x + 1, y + 2, BW - 2, LH - 6);
-      ctx.strokeStyle = color === 'red' ? COLORS.redStroke : COLORS.blueStroke;
-      ctx.lineWidth = 1;
-      ctx.strokeRect(x + 1.5, y + 2.5, BW - 3, LH - 7);
+      ctx.fillStyle = color === 'red' ? COLORS.redTint : COLORS.blueTint;
+      ctx.fillRect(geom.ox + c * BW, y, BW, CELL_H);
     }
   }
+
+  // Pass 2: the characters, one per cell, centred on the grid.
+  ctx.font = GLYPH_FONT;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (let r = 0; r < field.lines.length; r++) {
+    const ln = field.lines[r];
+    const cy = geom.oy + r * LH + CELL_TOP + CELL_H / 2 + 1;
+    for (let c = 0; c < ln.length; c++) {
+      const b = ln[c];
+      if (b.color === null) continue;
+      ctx.fillStyle = b.color === 'red' ? COLORS.red : COLORS.blue;
+      ctx.fillText(b.ch, geom.ox + c * BW + BW / 2, cy);
+    }
+  }
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
 }
 
 function drawCaret(
@@ -731,7 +758,7 @@ function drawSelection(
     const y = geom.oy + r * LH;
     const w = (to - from) * BW;
     const h = LH - 2;
-    // translucent overlay tints the bars, bright outline pins the bounds
+    // translucent overlay tints the text, bright outline pins the bounds
     ctx.fillStyle = COLORS.selection;
     ctx.fillRect(x, y, w, h);
     ctx.strokeStyle = COLORS.selectionEdge;
