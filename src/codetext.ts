@@ -88,3 +88,28 @@ export function codeText(width: number, rand: () => number, startClass: CharClas
   }
   return s;
 }
+
+/**
+ * Spell a long stretch as a *line of code*: exactly `width` characters made of
+ * several space-free words (each from `codeText`) joined by single spaces —
+ * `user.name=value parse(input) cache[0]`. Short stretches stay one word, and so
+ * does the occasional medium one, so not every run looks alike.
+ *
+ * No word is shorter than 3 characters (#15: the phrase is one colour, so its
+ * words go together under a line/selection chord, and tiny words would only add
+ * noise). Never starts or ends with a space. `startClass` applies to the first
+ * word only.
+ */
+export function codePhrase(width: number, rand: () => number, startClass: CharClass = 'word'): string {
+  if (width < 12 || (width <= 28 && rand() < 0.2)) return codeText(width, rand, startClass);
+  const words: string[] = [];
+  let left = width;
+  while (left > 0) {
+    let w = 3 + Math.floor(rand() * 12); // 3..14
+    if (left - w < 4) w = left; // what would remain after a space is < 3 → absorb it
+    words.push(codeText(w, rand, words.length === 0 ? startClass : 'word'));
+    left -= w;
+    if (left > 0) left -= 1; // the joining space
+  }
+  return words.join(' ');
+}

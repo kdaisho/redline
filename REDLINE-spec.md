@@ -85,8 +85,36 @@ For Alt-movement / Alt-selection / Alt-deletion, a **"word boundary"** is whites
 ## 6. Stages & end condition
 - Stage-based speedrun. Each stage = a fixed board of preset lines. Clear every red
   (keeping blues) → advance to next stage.
-- **Later stages have more rows** (taller field / denser board) and harder mixes
-  (more blue traps between reds, wider reds, more touching red/blue runs).
+- **Big deletes at every stage; difficulty is choosing the chord, not labor** (#15).
+  Red comes in large stretches — whole lines, slabs of several solid-red lines, long
+  phrases — never as a board of 1–3 character pieces. Stages 1–5 are hand-authored;
+  the rest are generated deterministically per `(stage, seed)` from row patterns:
+  - *slab / solid* — solid-red lines: one multi-line selection or one line delete.
+  - *keeper* — an all-blue line; *split* — a blue line between red lines, so one sweep
+    across all of them is a mistake.
+  - *decoy* — a slab in which one line hides a small blue word.
+  - *blue-word* — red · blue word · red: line delete is wrong, two deletes-to-line-edge
+    are right.
+  - *edge* — red then blue (or blue then red) with a space between.
+  - *glued* — red touching blue inside one whitespace-bounded word: the word chord
+    takes both, so the selection has to be placed by character.
+  - *mixed* — 3–5 medium words of both colors.
+  - *spike* — one line with a short burst of 1–2 character reds and blues. At most one
+    per board, from stage 8, on a minority of boards. The only place tiny reds exist.
+- **Later stages get harder through blue traps and time, not size.** The trap patterns
+  (split, decoy, blue-word, glued) take a growing share of the board; boards grow only
+  mildly (6 → 15 rows, 44 → 96 columns).
+- **Tedium guard:** a generated board is rejected and resampled if more than 25% of its
+  delete actions would remove ≤2 characters, or if it averages under 14 red characters
+  per delete action.
+- **Per-stage time limit.** Each stage has a budget; running out ends the run. The
+  budget is a competent player's estimated clear time for *that board* (time to read
+  each row, plus a cost per delete action by the chord it needs, plus a little per
+  trap) × a slack factor that tightens linearly from 1.7 (stage 1) to 1.05 (stage 50).
+- `node scripts/measure-stages.ts` prints the measured curve (delete actions, characters
+  per action, tiny-run share, traps, budget per action) for stages 1–50; `--check`
+  fails if a balance target or a board invariant is missed. The play model is
+  documented in `src/metrics.ts`.
 - A run ends at **stage 50** (win condition) or after **2 mistakes** (lose condition).
 - End screen: stage reached, final score, total time, best (localStorage). Restart key.
 
