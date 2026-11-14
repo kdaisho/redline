@@ -8,16 +8,21 @@
   box-sizing: border-box;
 }
 
+/* The room around the tube: black, so the amber is the only light. */
 html,
 body {
   min-height: 100%;
-  background: #0a0c10;
+  background: #020302;
 }
 
 #game {
   display: block;
   /* center when it fits the viewport; overflow → scroll on both axes */
   margin: 24px auto;
-  /* hard, no rounding — REDLINE is sharp on purpose */
-  image-rendering: pixelated;
+  /* same colour as the canvas clears to, so nothing flashes before the first frame */
+  background: #060a07;
+  /* the bezel: a hairline of dim amber and the faint spill of the phosphor */
+  box-shadow:
+    0 0 0 1px #2a1e00,
+    0 0 90px rgba(255, 176, 0, 0.09);
 }

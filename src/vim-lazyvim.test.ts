@@ -514,10 +514,10 @@ describe('robustness', () => {
 });
 
 describe('help screen', () => {
-  // The help screen is two fixed-width columns in a 14px monospace font (render.ts `drawHelp`).
-  const CHAR_W = 8.5;
-  const KEYS_W = 300;
-  const COL_W = (1500 - 24 * 2) / 2;
+  // The help screen is two fixed-width columns in 22px VT323, whose advance is 0.4 em (render.ts `drawHelp`).
+  const CHAR_W = 22 * 0.4;
+  const KEYS_W = 276;
+  const COL_W = (1500 - 28 * 2) / 2;
 
   it('every line fits its column', () => {
     for (const mode of MODES) {
@@ -533,8 +533,8 @@ describe('help screen', () => {
 
   it('both columns fit the canvas height', () => {
     // the same fill as `drawHelp`: left column to about half the total, then the right
-    const heightOf = (rows: number) => 26 + rows * 21 + 16;
-    const room = 1100 - (24 + 56 + 64) - 24;
+    const heightOf = (rows: number) => 26 + rows * 21 + 14;
+    const room = 1100 - (100 + 62) - 20;
     for (const mode of MODES) {
       const total = mode.help.reduce((h, s) => h + heightOf(s.rows.length), 0);
       const cols = [0, 0];

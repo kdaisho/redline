@@ -13,9 +13,11 @@
 
 // ── Grid geometry ──────────────────────────────────────────────────────────
 // Fixed block width and line height (px). Render and input hit-testing read
-// these so the model and the picture agree on one grid.
-export const BW = 13;
-export const LH = 26;
+// these so the model and the picture agree on one grid. Sized for VT323 (#11):
+// its advance is 0.4 em, so a 37.5 px glyph is exactly BW wide with 3 px pixel
+// rows, and LH is 13 of those rows.
+export const BW = 15;
+export const LH = 39;
 
 // Word width bounds from the spec (§1). Board authoring should stay in range;
 // not hard-enforced so stages keep their freedom.
