@@ -2,12 +2,12 @@
 
 A browser game styled as a harsh code editor. Lines hold code-like text in two
 colors. **Red = enemy, delete it. Blue = friend, keep it.** Move a text caret
-with macOS keyboard chords and clear every red as fast and cleanly as possible.
-Sharp, edgy aesthetic. Faster + fewer mistakes = better.
+with the keys of the chosen **mode** (§2) and clear every red as fast and cleanly
+as possible. Sharp, edgy aesthetic. Faster + fewer mistakes = better.
 
 ## 1. Field model
 - Canvas, **hard rectangular** editor frame (no rounded corners anywhere). HUD above:
-  `score`, `time`, `stage`, and a strike indicator.
+  `score`, `time`, `stage`, the active `mode`, and a strike indicator.
 - Monospace grid: fixed block width `BW`, line height `LH`. One block = one character.
 - **Line** = row; holds 1–N **runs**, optionally separated by space blocks.
 - **Run** = stretch of same-color characters, 1–100 wide, color ∈ {red, blue}, spelled as
@@ -24,7 +24,28 @@ caret  = { line, col }                        // sits before block[col]
 select = { anchor:{line,col}, head:{line,col} } | null
 ```
 
-## 2. Controls — full macOS chords + shift-selection
+## 2. Controls
+
+### Modes
+A **mode** is a control scheme. The field, rules, scoring and boards are the same
+in every mode; only the keys differ.
+
+| Mode | Keys |
+|---|---|
+| **Standard** | macOS editor chords + shift-selection (below) |
+| **Vim** | modal Vim editing — listed, not playable yet (#7) |
+
+- The start screen has a mode picker: press the mode's number (`1`, `2`, …) or
+  `Tab` to switch. The choice is remembered (localStorage `redline.mode`).
+- The start screen's key help describes the selected mode; the HUD shows the
+  active mode during a run.
+- A run is played in one mode. `Esc` on the game-over / win screen returns to the
+  start screen, where the mode can be changed.
+- **Best scores are per mode** (§6).
+
+Global keys (every mode): `Enter` / `Space` start, advance, restart · `M` mute.
+
+### Standard mode — full macOS chords + shift-selection
 
 Movement (hold-to-repeat ENABLED):
 | Key | Action |
@@ -117,6 +138,8 @@ For Alt-movement / Alt-selection / Alt-deletion, a **"word boundary"** is whites
   documented in `src/metrics.ts`.
 - A run ends at **stage 50** (win condition) or after **2 mistakes** (lose condition).
 - End screen: stage reached, final score, total time, best (localStorage). Restart key.
+- **Best is stored per mode**: Standard in `redline.best` (the key used before modes
+  existed, so an older best carries over), other modes in `redline.best.<mode>`.
 
 ## 7. Rendering / theme
 - **Edgy/sharp:** hard rectangles, thin high-contrast strokes, monospace HUD, no
@@ -129,9 +152,11 @@ For Alt-movement / Alt-selection / Alt-deletion, a **"word boundary"** is whites
 
 ## 8. Tech stack
 - **TypeScript + HTML5 Canvas**, **Vite**, **pnpm**. Single `requestAnimationFrame` loop.
-- Modules: `state.ts` (model + caret/selection/delete ops), `input.ts` (keymap → actions,
-  repeat handling), `render.ts`, `game.ts` (loop, stages, scoring, strikes),
-  `stages.ts` (board definitions), `main.ts`.
+- Modules: `state.ts` (model + caret/selection/delete ops), `modes.ts` (mode registry,
+  remembered choice), `input.ts` (shared key controller: listeners, repeat handling,
+  global keys), `keymaps/<mode>.ts` (one keymap per mode over the shared field actions),
+  `render.ts`, `game.ts` (loop, stages, scoring, strikes), `stages.ts` (board
+  definitions), `main.ts`.
 
 ---
 
