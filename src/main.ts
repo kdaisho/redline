@@ -1,3 +1,6 @@
+// VT323, the Phosphor theme's face, ships with the game: a third-party font host that
+// stalls would block the first paint and leave the page blank (#27).
+import '@fontsource/vt323/latin-400.css';
 import './style.css';
 import { Game } from './game.ts';
 import { playfieldCols, playfieldRows } from './render.ts';
