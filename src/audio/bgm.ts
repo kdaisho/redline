@@ -376,6 +376,12 @@ interface Rig {
 export interface PlayOptions {
   /** Extra seconds of silence before the first note (lets a fade-out or a cue finish). */
   delay?: number;
+  /**
+   * Start this many steps into the track instead of at its top (#37: seeking on the
+   * soundtrack page). May run past one loop. Notes that began before this point are
+   * not resumed mid-note; everything from it on plays as usual.
+   */
+  from?: number;
 }
 
 export interface BgmPosition {
@@ -728,6 +734,20 @@ export function createBgmEngine(ctx: BaseAudioContext, destination: AudioNode, o
     stop();
     const at = ctx.currentTime + START_LEAD + Math.max(0, opts.delay ?? 0);
     const r = buildRig(track, at);
+    const from = Math.max(0, Math.floor(opts.from ?? 0));
+    if (from > 0) {
+      // Pretend the track started `from` steps before `at`: the next event due is the
+      // first one at or after that point, and position() counts from the real top.
+      const steps = r.comp.steps;
+      const inLoop = from % steps;
+      r.t0 = at - from * r.spb;
+      r.loop = Math.floor(from / steps);
+      r.idx = r.comp.events.findIndex((e) => e.t >= inLoop);
+      if (r.idx < 0) {
+        r.idx = 0;
+        r.loop++;
+      }
+    }
     rig = r;
     tick(r);
     r.timer = setInterval(() => tick(r), TICK_MS);

@@ -104,16 +104,36 @@ function ensureAudio(): NonNullable<typeof audio> | null {
 }
 
 // ── actions ──────────────────────────────────────────────────────────────────
-function play(index: number): void {
+function play(index: number, fromStep = 0): void {
   const a = ensureAudio();
-  select(index);
+  if (index !== selected) select(index);
   if (!a) {
     $('hint').textContent = 'This browser has no Web Audio, so the tracks cannot be played here.';
     return;
   }
-  a.engine.play(ENTRIES[index].track);
+  a.engine.play(ENTRIES[index].track, { from: fromStep });
   void a.ctx.resume().catch(() => undefined);
   paintTransport();
+}
+
+/**
+ * Jump to a point in the track in the player bar (#37), `frac` of the way through
+ * its two passes. A paused track stays paused at the new point; with nothing
+ * loaded, the shown track starts playing from there.
+ */
+function seek(frac: number): void {
+  const loaded = loadedIndex();
+  const index = loaded >= 0 ? loaded : selected;
+  const e = ENTRIES[index];
+  const total = e.comp.steps * PASSES;
+  const step = Math.min(total - 1, Math.max(0, Math.round(frac * total)));
+  const wasPaused = !!audio && loaded >= 0 && audio.ctx.state !== 'running';
+  const a = ensureAudio();
+  if (!a) return play(index);
+  a.engine.play(e.track, { from: step });
+  if (!wasPaused) void a.ctx.resume().catch(() => undefined);
+  paintTransport();
+  paintPosition();
 }
 
 function toggle(): void {
@@ -239,13 +259,24 @@ function paintTransport(): void {
 }
 
 let lastBar = -1;
+/** 0..1 while the progress bar is being dragged, else null. */
+let dragFrac: number | null = null;
 /** Progress, current bar and chord. Returns true when the song has run its passes. */
 function paintPosition(): boolean {
   const pos = audio?.engine.position();
   const loaded = loadedIndex();
-  const fill = $('bar-fill');
+  const bar = $('bar');
+  if (dragFrac !== null) {
+    // while dragging, the bar follows the pointer and the time shows the target
+    const e = ENTRIES[loaded >= 0 ? loaded : selected];
+    bar.style.setProperty('--pos', `${(dragFrac * 100).toFixed(2)}%`);
+    $('t-now').textContent = mmss(dragFrac * e.seconds);
+    return false;
+  }
   if (!pos || loaded < 0) {
-    fill.style.width = '0%';
+    bar.style.setProperty('--pos', '0%');
+    bar.setAttribute('aria-valuenow', '0');
+    bar.setAttribute('aria-valuetext', '0:00');
     $('t-now').textContent = '0:00';
     $('live-chord').textContent = '';
     if (lastBar >= 0) barCells[lastBar]?.classList.remove('on');
@@ -258,8 +289,9 @@ function paintPosition(): boolean {
   const finished = !repeat && done >= total;
   done %= total;
   const frac = done / total;
-  fill.style.width = `${(frac * 100).toFixed(2)}%`;
-  $('bar').setAttribute('aria-valuenow', String(Math.round(frac * 100)));
+  bar.style.setProperty('--pos', `${(frac * 100).toFixed(2)}%`);
+  bar.setAttribute('aria-valuenow', String(Math.round(frac * 100)));
+  bar.setAttribute('aria-valuetext', mmss(done * e.sps));
   $('t-now').textContent = mmss(done * e.sps);
 
   if (loaded === selected) {
@@ -368,8 +400,55 @@ $('toggle').addEventListener('click', toggle);
 $('hero-play').addEventListener('click', toggle);
 $('prev').addEventListener('click', () => step(-1));
 $('next').addEventListener('click', () => step(1));
+// The bar's own keydown runs first and stops arrow keys from also changing track.
 $('repeat').addEventListener('click', () => setRepeat(!repeat));
 $('repeat-chip').addEventListener('click', () => setRepeat(!repeat));
+// ── seeking (#37): click or drag the progress bar; arrows when it has focus ──
+{
+  const bar = $('bar');
+  const fracAt = (clientX: number): number => {
+    const r = bar.getBoundingClientRect();
+    return r.width > 0 ? Math.min(1, Math.max(0, (clientX - r.left) / r.width)) : 0;
+  };
+  bar.addEventListener('pointerdown', (ev) => {
+    if (ev.button !== 0) return;
+    ev.preventDefault(); // no text selection or focus ring from a mouse seek
+    bar.setPointerCapture(ev.pointerId);
+    bar.classList.add('dragging');
+    dragFrac = fracAt(ev.clientX);
+    paintPosition();
+  });
+  bar.addEventListener('pointermove', (ev) => {
+    if (dragFrac === null) return;
+    dragFrac = fracAt(ev.clientX);
+    paintPosition();
+  });
+  const finish = (ev: PointerEvent, commit: boolean): void => {
+    if (dragFrac === null) return;
+    const frac = commit ? fracAt(ev.clientX) : null;
+    dragFrac = null;
+    bar.classList.remove('dragging');
+    if (frac !== null) seek(frac);
+    else paintPosition();
+  };
+  bar.addEventListener('pointerup', (ev) => finish(ev, true));
+  bar.addEventListener('pointercancel', (ev) => finish(ev, false));
+  bar.addEventListener('keydown', (ev) => {
+    const e = ENTRIES[loadedIndex() >= 0 ? loadedIndex() : selected];
+    const now = Number(bar.getAttribute('aria-valuenow') ?? 0) / 100;
+    const stepFrac = 5 / e.seconds; // five seconds per arrow press
+    let to: number | null = null;
+    if (ev.key === 'ArrowRight' || ev.key === 'ArrowUp') to = now + stepFrac;
+    else if (ev.key === 'ArrowLeft' || ev.key === 'ArrowDown') to = now - stepFrac;
+    else if (ev.key === 'Home') to = 0;
+    else if (ev.key === 'End') to = 0.999;
+    if (to === null) return;
+    ev.preventDefault();
+    ev.stopPropagation(); // the page's own arrow keys change track / volume
+    seek(Math.min(0.999, Math.max(0, to)));
+  });
+}
+
 $<HTMLInputElement>('vol').addEventListener('input', (ev) => setVolume(Number((ev.target as HTMLInputElement).value)));
 
 window.addEventListener('keydown', (e) => {

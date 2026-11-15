@@ -487,5 +487,6 @@ Juice & meta
 view per track (its own palette and code-drawn cover art, a live meter, the bar-by-bar
 chord structure) and a player bar. It plays the game's own track data through the game's
 own music engine, so it always matches the game. A track counts as two passes of its
-loop, then the next one starts unless Repeat is on. `S` on the title screen opens it;
+loop, then the next one starts unless Repeat is on. Clicking or dragging the progress bar
+seeks (arrow keys too, when the bar has focus); a paused track stays paused at the new point. `S` on the title screen opens it;
 `Esc` there returns to the game.
