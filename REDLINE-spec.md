@@ -312,6 +312,7 @@ The theme is **Phosphor** (chosen in #10, built in #11): an amber CRT terminal.
   VT323 advances 0.4 em with 0.08 em pixel rows, so the grid is `BW` 15 × `LH` 39 and field
   glyphs are 37.5 px: exactly one cell wide, with 3 px pixel rows. The 1500×1100 canvas holds
   96 × 23 cells — the generator's own maximum is 96 × 15, so boards are unchanged.
+  The canvas is scaled down to fit the window (never above 1:1) and the page does not scroll.
 - **Red vs blue never rely on hue alone:** red glows and is double-struck; blue is dim cyan
   and bare.
 - **CRT:** scanlines every 3 px and a vignette over everything. Row baselines sit on
