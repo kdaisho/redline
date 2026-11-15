@@ -43,14 +43,24 @@ in every mode; only the keys differ.
   start screen, where the mode can be changed.
 - **Best scores are per mode** (§6).
 
-Global keys (every mode): `Enter` / `Space` start, advance, restart · `M` or `F2`
-mute · `F1` help · `F3` / `F4` music volume down / up · `F6` / `F7` SFX volume
-down / up (`Shift` + one of them: that bus off / on) — see §9. A mode may claim a
-global typing key while playing (Vim claims `M`, `Enter`, `Space`, `Esc`); the
-function keys can never be claimed.
+Global keys (every mode): `Enter` / `Space` start, advance, restart · `Esc` menu ·
+`M` mute (Standard). A mode may claim a global typing key while playing (Vim claims
+`M`, `Enter`, `Space`, and `Esc` while it has something to cancel).
 
-**Help screen (`F1`)**, on the start screen or mid-stage: every key of the active
-mode. Mid-stage it is a pause — both clocks stop and the board is hidden.
+**Pause menu (`Esc`, #33)**, mid-stage or on the start screen: Resume, Keys (the help
+screen), Music volume, Effects volume, Sound on/off, and Quit to title (Soundtrack on
+the start screen). `↑` `↓` or `j` `k` select, `←` `→` or `h` `l` change a value, `Enter`
+chooses, `Esc` closes. Mid-stage it is a pause — both clocks stop and the board is
+hidden. In Vim mode `Esc` first cancels a half-typed command, a selection, a search or a
+flash jump; with nothing to cancel it opens the menu. On an end screen `Esc` goes back
+to the start screen.
+
+The function keys still work everywhere but are not shown in the hints, because on a
+Mac they need a system setting or `Fn`: `F1` help · `F2` mute · `F3` / `F4` music
+volume · `F6` / `F7` SFX volume (`Shift` + one of them: that bus off / on) — see §9.
+
+**Help screen** (Keys in the menu, or `F1`): every key of the active mode. Mid-stage it
+is a pause, like the menu.
 
 ### Standard mode — full macOS chords + shift-selection
 

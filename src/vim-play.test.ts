@@ -225,7 +225,7 @@ describe('controller + standard keymap', () => {
     press('ArrowUp', { altKey: true });
     press('m');
     press('Enter');
-    press('Escape'); // not a key in Standard play
+    press('Escape'); // not a Standard key: it is the game's menu key (#33)
     expect(calls).toEqual([
       'move:char-right',
       'delete:word-left',
@@ -234,6 +234,7 @@ describe('controller + standard keymap', () => {
       'row:-1',
       'mute',
       'confirm',
+      'menu',
     ]);
     detach();
     vi.unstubAllGlobals();

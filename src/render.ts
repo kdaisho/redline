@@ -146,11 +146,29 @@ export interface Scene {
   phase: Phase;
   mode: Mode; // active control mode (#8) → HUD label, start-screen picker + key help
   vim: VimView | null; // Vim mode's statusline + Visual selection (#7); null in other modes
-  helpOpen: boolean; // F1 help screen is up (covers everything but the HUD)
+  helpOpen: boolean; // the help screen is up (covers everything but the HUD)
+  menu: MenuView | null; // the pause menu (Esc, #33) is up — also covers the board
   overReason: 'strikes' | 'timeout'; // why the run ended → game-over subtitle (KDA-59)
   best: number; // best score ever (localStorage), shown on start/over screens
   isNewBest: boolean; // this run beat the stored best
   countdownNum: number; // 3→2→1, shown while phase === 'countdown' (KDA-49)
+}
+
+/** One row of the pause menu (#33). */
+export interface MenuItem {
+  id: 'resume' | 'help' | 'music' | 'sfx' | 'mute' | 'quit' | 'soundtrack';
+  label: string;
+  /** Current setting, shown right of the label. */
+  value?: string;
+  /** ← / → change the value. */
+  adjustable?: boolean;
+}
+
+export interface MenuView {
+  items: MenuItem[];
+  index: number;
+  /** Opened mid-stage (the clock is stopped) rather than on the start screen. */
+  paused: boolean;
 }
 
 /** What Vim mode adds to the picture: the statusline and the Visual selection. */
@@ -697,6 +715,7 @@ export function render(ctx: Ctx, width: number, height: number, scene: Scene, no
   else if (phase === 'won') drawEndScreen(ctx, width, height, scene, nowMs, true);
 
   if (scene.helpOpen) drawHelp(ctx, width, height, scene.mode);
+  else if (scene.menu) drawMenu(ctx, width, height, scene.menu);
 
   // strike: red tint while the rows are out of sync
   if (strikeAge >= 0 && strikeAge < STRIKE_JITTER_MS)
@@ -823,7 +842,7 @@ function drawFootline(ctx: Ctx, width: number, height: number, scene: Scene, str
     gtext(ctx, `SELECT ${pad2(Math.max(0, n))}`, x, y, S_HUD);
   } else gtext(ctx, 'READY.', x, y, S_HUD);
 
-  text(ctx, 'F1 HELP  ·  F2 MUTE', width / 2, y, C.dim, F_SM, 'center');
+  text(ctx, 'ESC MENU', width / 2, y, C.dim, F_SM, 'center');
   if (field.lines.length > 0)
     gtext(ctx, `L${pad2(field.caret.line + 1)} C${pad2(field.caret.col + 1)}`, width - PAD, y, S_HUD_DIM, 'right');
 }
@@ -1045,7 +1064,7 @@ function drawStartScreen(ctx: Ctx, width: number, height: number, best: number, 
   if (best > 0) text(ctx, `${modeInfo(mode).label.toUpperCase()} BEST  ${thousands(best)}`, cx, y, C.dim, F_SM, 'center');
   y += 58;
   prompt(ctx, 'PRESS ENTER TO START', cx, y, nowMs);
-  text(ctx, 'S FOR SOUNDTRACK', cx, y + 44, C.dim, F_SM, 'center');
+  text(ctx, 'ESC FOR OPTIONS   ·   S FOR SOUNDTRACK', cx, y + 44, C.dim, F_SM, 'center');
 }
 
 /**
@@ -1118,6 +1137,48 @@ function drawEndScreen(ctx: Ctx, width: number, height: number, scene: Scene, no
   text(ctx, 'ESC FOR MENU', cx, y + 44, C.dim, F_SM, 'center');
 }
 
+/**
+ * Pause menu (Esc, #33): a short list in the middle of the tube. Opaque below
+ * the HUD, like the help screen — while it is up the board is not readable.
+ */
+function drawMenu(ctx: Ctx, width: number, height: number, menu: MenuView): void {
+  rect(ctx, 0, RULE_TOP + 1, width, height - RULE_TOP - 1, C.bg);
+  const cx = width / 2;
+  const ROW = 50;
+  const step = adv(F_HUD);
+  const LABEL_W = 16; // characters: the widest label plus a gap before the value
+  const rowW = (LABEL_W + 8) * step;
+  const x0 = Math.round(cx - rowW / 2);
+  let y = midY(height) - (menu.items.length * ROW) / 2 - 70;
+
+  text(ctx, menu.paused ? 'PAUSED' : 'OPTIONS', cx, y, C.amber, F_BANNER, 'center', C.amber, 16);
+  y += 62;
+  text(ctx, menu.paused ? 'THE CLOCK IS STOPPED' : 'SOUND AND KEYS', cx, y, C.dim, F_SM, 'center');
+  y += 66;
+
+  menu.items.forEach((item, i) => {
+    const on = i === menu.index;
+    if (on) {
+      // the selected row is a lit inverse-video bar, like the mode picker
+      ctx.save();
+      ctx.shadowColor = C.amber;
+      ctx.shadowBlur = 10 * GLOW * dpr;
+      rect(ctx, x0 - 14, y - 20, rowW + 28, 40, C.amber);
+      ctx.restore();
+    }
+    const color = on ? C.bg : C.amber;
+    text(ctx, item.label, x0, y, color, F_HUD);
+    if (item.value !== undefined) {
+      const shown = item.adjustable && on ? `< ${item.value} >` : item.value;
+      text(ctx, shown, x0 + rowW, y, on ? C.bg : C.dim, F_HUD, 'right');
+    }
+    y += ROW;
+  });
+
+  y += 26;
+  text(ctx, 'UP / DOWN  SELECT   ·   LEFT / RIGHT  CHANGE   ·   ENTER  CHOOSE   ·   ESC  CLOSE', cx, y, C.dim, F_SM, 'center');
+}
+
 // Help screen geometry — `vim-lazyvim.test.ts` checks every key list against these numbers.
 const HELP_TOP = RULE_TOP + 62; // first section title
 // (the columns may run to 20 px above the canvas bottom)
@@ -1135,7 +1196,7 @@ function drawHelp(ctx: Ctx, width: number, height: number, mode: Mode): void {
 
   const info = modeInfo(mode);
   gtext(ctx, `${info.label.toUpperCase()} MODE -- KEYS`, PAD, RULE_TOP + 28, S_HUD);
-  text(ctx, 'F1 / ESC / ENTER -- CLOSE', width - PAD, RULE_TOP + 28, C.dim, F_SM, 'right');
+  text(ctx, 'ESC / ENTER -- CLOSE', width - PAD, RULE_TOP + 28, C.dim, F_SM, 'right');
 
   const heightOf = (s: HelpSection) => HELP_TITLE_H + s.rows.length * HELP_ROW_H + HELP_GAP;
 
