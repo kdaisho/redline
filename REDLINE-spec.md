@@ -338,6 +338,26 @@ boards** (a generated board from stages 6–50 with a seed no run uses), and Les
   random board and previous goes back through the ones already played.
 - Practice never records a best.
 
+**Lessons (#44)** — LESSONS on the training picker (shown `★ n / N`; `SOON` for a mode
+without lessons yet) opens the lesson list, with each lesson's mark (`★` or `DONE`).
+A lesson is free practice on a small hand-built board, plus a panel under the board:
+its title, what the technique does, the keys, and the **target** — at most N delete
+commands and no mistake earns a ★. Any clear passes; the target never blocks.
+- A *delete command* is one that removed something (red or blue); spaces-only deletes
+  and moves don't count. Undo rolls the delete count and the mistake tally back with
+  the board, so a ★ means the final solution was clean.
+- Cleared: `Enter` next lesson (after the last one, the list), `R` retry, `Esc` the list.
+  Esc menu: Resume, Reset lesson, Next / Previous lesson, Lesson list, Keys, volumes,
+  Sound, Quit to training.
+- Progress is stored per mode in `redline.training.<mode>` (`pass` / `star`; a ★ is never
+  downgraded).
+- Lessons live in `src/training.ts` (a tiny markup: red text, `«blue»`, spaces) with
+  their intended keys; `training.test.ts` plays every lesson through the real engine and
+  checks it clears on exactly its target with no mistake.
+- **Vim (14):** `x` and `hjkl` · `w b e`, `dw de` · `diw daw` · `dd D` · counts · `f t`, `df, dt)`
+  · `%`, `d%` · `di( da" da[` · mini.ai `daa dau diu` · Visual `v V` · Visual Block ·
+  search `/ n d/` · flash `s`, `ds` · `.` and `Alt-j/k`.
+
 ## 7. Rendering / theme
 The theme is **Phosphor** (chosen in #10, built in #11): an amber CRT terminal.
 
