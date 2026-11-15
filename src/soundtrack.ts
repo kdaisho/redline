@@ -112,6 +112,7 @@ function play(index: number, fromStep = 0): void {
     return;
   }
   a.engine.play(ENTRIES[index].track, { from: fromStep });
+  songStart = 0;
   void a.ctx.resume().catch(() => undefined);
   paintTransport();
 }
@@ -131,6 +132,7 @@ function seek(frac: number): void {
   const a = ensureAudio();
   if (!a) return play(index);
   a.engine.play(e.track, { from: step });
+  songStart = 0;
   if (!wasPaused) void a.ctx.resume().catch(() => undefined);
   paintTransport();
   paintPosition();
@@ -259,6 +261,12 @@ function paintTransport(): void {
 }
 
 let lastBar = -1;
+/**
+ * Engine step where the current pass of the song began (#39). The engine counts
+ * from the moment a track started; each time Repeat carries the song round again
+ * this moves on by one song length, so turning Repeat off finishes *this* pass.
+ */
+let songStart = 0;
 /** 0..1 while the progress bar is being dragged, else null. */
 let dragFrac: number | null = null;
 /** Progress, current bar and chord. Returns true when the song has run its passes. */
@@ -285,9 +293,10 @@ function paintPosition(): boolean {
   }
   const e = ENTRIES[loaded];
   const total = e.comp.steps * PASSES;
-  let done = pos.loop * e.comp.steps + pos.step;
-  const finished = !repeat && done >= total;
-  done %= total;
+  const at = pos.loop * e.comp.steps + pos.step;
+  if (repeat) while (at - songStart >= total) songStart += total; // a new pass of the song
+  const finished = !repeat && at - songStart >= total;
+  const done = Math.min(total - 1, Math.max(0, at - songStart));
   const frac = done / total;
   bar.style.setProperty('--pos', `${(frac * 100).toFixed(2)}%`);
   bar.setAttribute('aria-valuenow', String(Math.round(frac * 100)));
