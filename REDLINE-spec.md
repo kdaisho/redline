@@ -307,7 +307,7 @@ The theme is **Phosphor** (chosen in #10, built in #11): an amber CRT terminal.
 - **Palette:** tube `#060A07`, amber `#FFB000` (chrome, caret, prompts), dim amber `#8A6200`
   (labels, line numbers, rules), red `#FF5A3C`, blue `#3FB4C0`, white-hot `#FFF4E0`
   (delete bloom, pulses, flash labels).
-- **Font:** VT323 (Google Fonts, loaded in `index.html`), all-caps readouts. Nothing is drawn
+- **Font:** VT323 (bundled with the game via `@fontsource/vt323`, imported in `main.ts`), all-caps readouts. Nothing is drawn
   until it has loaded; if it never does, the system monospace stands in on the same grid.
   VT323 advances 0.4 em with 0.08 em pixel rows, so the grid is `BW` 15 × `LH` 39 and field
   glyphs are 37.5 px: exactly one cell wide, with 3 px pixel rows. The 1500×1100 canvas holds
