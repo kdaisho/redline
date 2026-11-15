@@ -336,6 +336,16 @@ export class Game {
       this.rafId = requestAnimationFrame(loop);
     };
     this.rafId = requestAnimationFrame(loop);
+
+    // Leaving the tab or the window mid-stage pauses the run (#35): the clocks run
+    // on wall time, so without this a 20 s Cmd-Tab would end the stage on time.
+    const pauseIfPlaying = (): void => {
+      if (this.phase === 'playing' && this.overlay === 'none') this.openMenu();
+    };
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') pauseIfPlaying();
+    });
+    window.addEventListener('blur', pauseIfPlaying);
   }
 
   /** Enter/Space: start a run, advance from a cleared stage, or restart from game over. */
@@ -831,6 +841,10 @@ export class Game {
 
   /** End the run in game over, freezing both clocks at the exact instant (KDA-59). */
   private endRun(reason: 'strikes' | 'timeout'): void {
+    // A menu or help opened in the same frame the clock ran out must not stay up
+    // over the game-over screen (#35). The clocks are frozen just below.
+    this.overlay = 'none';
+    this.helpFromMenu = false;
     this.phase = 'over';
     this.overReason = reason;
     const now = performance.now();
