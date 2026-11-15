@@ -28,6 +28,12 @@ function playVim(lesson: Lesson) {
   let mistakes = 0;
   const trace: string[] = [];
   for (const k of lesson.solution) {
+    if (k === '<Esc>') {
+      // the game's rule (game.ts onVimKey): Esc with nothing to cancel opens the pause menu
+      const st = vim.status();
+      if (st.mode === 'normal' && st.pending === '' && !st.operator && st.prompt === null && st.flash === null)
+        throw new Error(`${lesson.id}: <Esc> here would open the menu, not reach Vim`);
+    }
     const out = vim.key(f, k);
     if (out.deleted && (out.deleted.red > 0 || out.deleted.blue > 0)) {
       deletes++;

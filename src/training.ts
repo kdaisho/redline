@@ -201,7 +201,7 @@ const VIM: Lesson[] = [
     keys: 'f t  ; ,   df,  dt)',
     board: ['«call(»junk, «a)»', '«f(»bad.code«)»'],
     target: 2,
-    solution: keys('fjdf,<Esc>fbdt)'),
+    solution: keys('fjdf,fbdt)'),
   },
   {
     id: 'vim-percent',
