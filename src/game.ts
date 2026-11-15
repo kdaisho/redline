@@ -1,4 +1,4 @@
-import { render, type Scene, type Flash, type MenuItem, type MenuView } from './render.ts';
+import { render, type Scene, type Flash, type MenuItem, type MenuView, type PracticeView } from './render.ts';
 import {
   type FieldState,
   type MoveAction,
@@ -15,6 +15,7 @@ import {
   isMistake,
   redsRemaining,
   posEqual,
+  createField,
 } from './state.ts';
 import { attachInput, type DeleteAction, type Keymap } from './input.ts';
 import { createStandardKeymap } from './keymaps/standard.ts';
@@ -52,8 +53,15 @@ import {
   nextIndex,
   randomBoard,
 } from './practice.ts';
+import { type Progress, LESSONS, lessonBoard, loadProgress, recordLesson } from './training.ts';
 
 const MAX_STRIKES = 2; // spec §3
+
+/** A lesson's counters, stored with each undo step so an undo rolls them back (#44). */
+interface LessonCounters {
+  deletes: number;
+  mistakes: number;
+}
 const FLASH_LIFETIME_MS = 220; // prune snap-out flashes after they finish drawing
 
 // Pre-stage 3-2-1 countdown (KDA-49): board hidden, clock/input gated until it ends.
@@ -254,9 +262,14 @@ export class Game {
   /**
    * What is being played (#43). A `run` is the real game: a clock per stage, two
    * strikes end it. `practice` has no limit, mistakes are only counted, and the
-   * board can be undone, reset, or swapped for another.
+   * board can be undone, reset, or swapped for another. A `lesson` (#44) is
+   * practice on a hand-built board with a target number of deletes.
    */
-  private kind: 'run' | 'practice' = 'run';
+  private kind: 'run' | 'practice' | 'lesson' = 'run';
+  /** Practice and lessons: no clock limit, mistakes only counted, undo and the readout on. */
+  private get untimed(): boolean {
+    return this.kind !== 'run';
+  }
   private overReason: 'strikes' | 'timeout' = 'strikes'; // why the run ended (game-over subtitle)
   private best: Best = { score: 0, stage: 0, timeMs: 0 };
   private isNewBest = false;
@@ -295,7 +308,14 @@ export class Game {
   private practiceBoard: PracticeBoard = { index: 0, seed: 0 };
   private practiceRandom = false; // RANDOM BOARDS: each next board is a fresh generated one
   private practiceHistory: PracticeBoard[] = []; // random boards already played, for PREV
-  private readonly undo = new UndoStack();
+  private readonly undo = new UndoStack<LessonCounters>();
+  // lessons (#44)
+  private trainingScreen: 'main' | 'lessons' = 'main';
+  private lessonListIndex = 0;
+  private lessonIndex = 0;
+  private lessonDeletes = 0; // delete commands that removed something, this attempt
+  private lessonStar = false; // the cleared attempt was on target
+  private progress: Progress = {};
   private mistakes = 0; // practice counts mistakes instead of ending on them
   private readout = ''; // the last command and what it did
   private vimKeys: string[] = []; // keys of the Vim command being typed, for the readout
@@ -353,7 +373,9 @@ export class Game {
         if (this.phase === 'start' && this.overlay === 'none') this.openTraining();
       },
       retry: () => {
-        if (this.kind === 'practice' && this.phase === 'cleared') this.loadPracticeBoard(this.practiceBoard);
+        if (this.phase !== 'cleared') return;
+        if (this.kind === 'practice') this.loadPracticeBoard(this.practiceBoard);
+        else if (this.kind === 'lesson') this.loadLesson(this.lessonIndex);
       },
       isActive: () => this.phase === 'playing' && this.overlay === 'none',
     });
@@ -391,6 +413,7 @@ export class Game {
     if (this.phase === 'playing' || this.phase === 'countdown' || this.phase === 'training') return;
     if (this.phase === 'cleared') {
       if (this.kind === 'practice') this.stepPracticeBoard(1);
+      else if (this.kind === 'lesson') this.stepLesson(1);
       else this.advanceStage();
       return;
     }
@@ -452,6 +475,20 @@ export class Game {
     const s = audioSettings();
     const level = (bus: 'music' | 'sfx'): string => (s[bus].muted ? 'OFF' : `${s[bus].volume} / ${MAX_VOLUME}`);
     const playing = this.phase === 'playing';
+    if (playing && this.kind === 'lesson') {
+      return [
+        { id: 'resume', label: 'RESUME' },
+        { id: 'reset', label: 'RESET LESSON' },
+        { id: 'next', label: 'NEXT LESSON', disabled: this.lessonIndex >= this.lessons().length - 1 },
+        { id: 'prev', label: 'PREVIOUS LESSON', disabled: this.lessonIndex === 0 },
+        { id: 'lessons', label: 'LESSON LIST' },
+        { id: 'help', label: 'KEYS' },
+        { id: 'music', label: 'MUSIC', value: level('music'), adjustable: true },
+        { id: 'sfx', label: 'EFFECTS', value: level('sfx'), adjustable: true },
+        { id: 'mute', label: 'SOUND', value: this.muted ? 'OFF' : 'ON' },
+        { id: 'training', label: 'QUIT TO TRAINING' },
+      ];
+    }
     if (playing && this.kind === 'practice') {
       return [
         { id: 'resume', label: 'RESUME' },
@@ -480,7 +517,10 @@ export class Game {
   /** The menu as drawn: its rows plus the heading that says what it is. */
   private menuView(): MenuView {
     const playing = this.phase === 'playing';
-    const practice = playing && this.kind === 'practice';
+    const practice = playing && this.untimed;
+    if (playing && this.kind === 'lesson') {
+      return { items: this.menuItems(), index: this.menuIndex, title: 'LESSON', subtitle: this.lesson().title };
+    }
     return {
       items: this.menuItems(),
       index: this.menuIndex,
@@ -564,12 +604,18 @@ export class Game {
         break;
       case 'reset':
         this.setOverlay('none');
-        this.loadPracticeBoard(this.practiceBoard);
+        if (this.kind === 'lesson') this.loadLesson(this.lessonIndex);
+        else this.loadPracticeBoard(this.practiceBoard);
         break;
       case 'next':
       case 'prev':
         this.setOverlay('none');
-        this.stepPracticeBoard(item.id === 'next' ? 1 : -1);
+        if (this.kind === 'lesson') this.stepLesson(item.id === 'next' ? 1 : -1);
+        else this.stepPracticeBoard(item.id === 'next' ? 1 : -1);
+        break;
+      case 'lessons':
+        this.setOverlay('none');
+        this.openLessonList();
         break;
     }
   }
@@ -580,12 +626,31 @@ export class Game {
     return [
       { id: 'practice', label: 'PRACTICE', value: `STAGE ${String(this.trainingStage + 1).padStart(2, '0')}`, adjustable: true },
       { id: 'random', label: 'RANDOM BOARDS' },
-      { id: 'lessons', label: 'LESSONS', value: 'SOON', disabled: true },
+      this.lessons().length > 0
+        ? { id: 'lessons', label: 'LESSONS', value: this.lessonTally() }
+        : { id: 'lessons', label: 'LESSONS', value: 'SOON', disabled: true },
       { id: 'back', label: 'BACK' },
     ];
   }
 
   private trainingView(): MenuView {
+    if (this.trainingScreen === 'lessons') {
+      const lessons = this.lessons();
+      return {
+        items: [
+          ...lessons.map((l, i): MenuItem => {
+            const mark = this.progress[l.id];
+            return { id: 'lesson', label: `${String(i + 1).padStart(2, '0')}  ${l.title}`, value: mark === 'star' ? '★' : mark === 'pass' ? 'DONE' : '' };
+          }),
+          { id: 'back', label: 'BACK' },
+        ],
+        index: this.lessonListIndex,
+        title: 'LESSONS',
+        subtitle: `${MODES.find((m) => m.id === this.mode)?.label ?? ''} MODE -- ★ = CLEARED ON TARGET WITH NO MISTAKE`,
+        hint: 'UP / DOWN  SELECT   ·   ENTER  START   ·   ESC  BACK',
+        compact: true,
+      };
+    }
     return {
       items: this.trainingItems(),
       index: this.trainingIndex,
@@ -601,11 +666,38 @@ export class Game {
     if (this.kind === 'practice' && !this.practiceRandom) this.trainingStage = this.practiceBoard.index;
     this.toTitle();
     this.phase = 'training';
+    this.trainingScreen = 'main';
+    this.progress = loadProgress(this.mode);
+  }
+
+  /** The lesson list, with the cursor on the lesson just played (or the first one without a ★). */
+  private openLessonList(): void {
+    const from = this.kind === 'lesson' ? this.lessonIndex : -1;
+    this.openTraining();
+    this.trainingScreen = 'lessons';
+    const firstOpen = this.lessons().findIndex((l) => this.progress[l.id] !== 'star');
+    this.lessonListIndex = from >= 0 ? from : Math.max(0, firstOpen);
+  }
+
+  private lessons() {
+    return LESSONS[this.mode];
+  }
+
+  private lesson() {
+    return this.lessons()[this.lessonIndex];
+  }
+
+  /** `★ 3 / 14` on the training picker's LESSONS row. */
+  private lessonTally(): string {
+    const lessons = this.lessons();
+    const stars = lessons.filter((l) => this.progress[l.id] === 'star').length;
+    return `★ ${stars} / ${lessons.length}`;
   }
 
   /** Keys on the training picker — all of them are the picker's. */
   private onTrainingKey(e: KeyboardEvent): boolean {
     if (e.metaKey || e.ctrlKey) return false;
+    if (this.trainingScreen === 'lessons') return this.onLessonListKey(e);
     const items = this.trainingItems();
     const item = items[this.trainingIndex];
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
@@ -628,9 +720,89 @@ export class Game {
     else if (k === 'Enter' || k === ' ') {
       if (item.id === 'practice') this.startPractice({ index: this.trainingStage, seed: RUN_SEED }, false);
       else if (item.id === 'random') this.startPractice(randomBoard(), true);
+      else if (item.id === 'lessons' && !item.disabled) {
+        sfx('menuMove');
+        this.openLessonList();
+      }
       else if (item.id === 'back') this.toTitle();
     } else if (k === 'm' && !e.repeat) this.onMute();
     return true;
+  }
+
+  /** Keys on the lesson list. */
+  private onLessonListKey(e: KeyboardEvent): boolean {
+    const count = this.lessons().length + 1; // + BACK
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    const move = (d: number): void => {
+      this.lessonListIndex = (this.lessonListIndex + d + count) % count;
+      sfx('menuMove');
+    };
+    if (e.repeat && (k === 'Escape' || k === 'Enter' || k === ' ')) return true;
+    if (k === 'Escape') {
+      this.trainingScreen = 'main';
+      sfx('menuMove');
+    } else if (k === 'ArrowUp' || k === 'k') move(-1);
+    else if (k === 'ArrowDown' || k === 'j' || k === 'Tab') move(1);
+    else if (k === 'Enter' || k === ' ') {
+      if (this.lessonListIndex >= this.lessons().length) {
+        this.trainingScreen = 'main';
+        sfx('menuMove');
+      } else this.startLesson(this.lessonListIndex);
+    } else if (k === 'm' && !e.repeat) this.onMute();
+    return true;
+  }
+
+  /** Begin a lesson (#44): practice rules on its hand-built board. */
+  private startLesson(index: number): void {
+    sfx('menuConfirm');
+    this.kind = 'lesson';
+    this.vim = new Vim();
+    this.scoreState = initialScore();
+    this.comboAlive = false;
+    this.strikes = 0;
+    this.isNewBest = false;
+    this.clock.start(performance.now());
+    this.loadLesson(index);
+  }
+
+  /** Put lesson `index` up, fresh: its counters, undo history and readout start over. */
+  private loadLesson(index: number): void {
+    const now = performance.now();
+    const lesson = this.lessons()[index];
+    this.lessonIndex = index;
+    this.stageIndex = 0;
+    this.field = createField(lessonBoard(lesson));
+    if (lesson.caret) this.field.caret = { ...lesson.caret };
+    this.vim.reset();
+    this.undo.clear();
+    this.vimKeys = [];
+    this.readout = '';
+    this.lessonDeletes = 0;
+    this.lessonStar = false;
+    this.mistakes = 0;
+    this.stageLimitMs = 0;
+    this.stageClock.reset();
+    this.goalCol = this.field.caret.col;
+    this.flashes = [];
+    this.clearedFlashMs = -Infinity;
+    this.phase = 'playing';
+    this.lastInputMs = now;
+    this.clock.resume(now);
+    setMusicScene({ kind: 'stage', stageIndex: 0 });
+    sfx('stageStart');
+  }
+
+  /** NEXT / PREVIOUS LESSON. Past the last lesson: back to the list. */
+  private stepLesson(dir: 1 | -1): void {
+    const next = this.lessonIndex + dir;
+    if (next < 0) return;
+    if (next >= this.lessons().length) this.openLessonList();
+    else this.loadLesson(next);
+  }
+
+  /** What a lesson's undo rolls back along with the board. */
+  private lessonCounters(): LessonCounters | undefined {
+    return this.kind === 'lesson' ? { deletes: this.lessonDeletes, mistakes: this.mistakes } : undefined;
   }
 
   /** Begin free practice on `board`. Score and the mistake tally start over. */
@@ -689,9 +861,14 @@ export class Game {
 
   /** Undo (u in Vim, ⌘Z in Standard): the board as it was before its last change. Practice only. */
   private onUndo(): void {
-    if (this.kind !== 'practice' || this.phase !== 'playing') return;
+    if (!this.untimed || this.phase !== 'playing') return;
     this.markInput();
-    if (!this.undo.undo(this.field)) {
+    const rolledBack = (tag: LessonCounters | undefined): void => {
+      if (!tag) return;
+      this.lessonDeletes = tag.deletes;
+      this.mistakes = tag.mistakes;
+    };
+    if (!this.undo.undo(this.field, rolledBack)) {
       this.readout = 'UNDO -- NOTHING TO UNDO';
       return;
     }
@@ -741,6 +918,10 @@ export class Game {
     }
     if (this.kind === 'practice' && this.phase === 'cleared') {
       this.openTraining();
+      return;
+    }
+    if (this.kind === 'lesson' && this.phase === 'cleared') {
+      this.openLessonList();
       return;
     }
     if (this.phase !== 'over' && this.phase !== 'won') return;
@@ -875,7 +1056,7 @@ export class Game {
   /** Alt+↑/↓: reorder rows. Pure layout — no blocks removed, so no score, mistake, or clear check. */
   private onMoveRow(dir: -1 | 1): void {
     if (this.phase !== 'playing') return;
-    if (this.undo.record(this.field, () => moveRows(this.field, dir))) {
+    if (this.undo.record(this.field, () => moveRows(this.field, dir), this.lessonCounters())) {
       this.goalCol = this.field.caret.col;
       this.markInput();
       sfx('rowMove');
@@ -911,7 +1092,7 @@ export class Game {
         return false;
       }
     }
-    if (key === 'u' && this.kind === 'practice') {
+    if (key === 'u' && this.untimed) {
       // Practice undo (#43). Only on a bare Normal-mode `u`: after `d` / `i` / `a`
       // it is still mini.ai's call object (`diu`), and a real run has no undo at all.
       const st = this.vim.status();
@@ -923,9 +1104,11 @@ export class Game {
     const size = this.fieldSize();
     const before = this.vimSnapshot();
     const outcome =
-      this.kind === 'practice' ? this.undo.record(this.field, () => this.vim.key(this.field, key)) : this.vim.key(this.field, key);
+      this.untimed
+        ? this.undo.record(this.field, () => this.vim.key(this.field, key), this.lessonCounters())
+        : this.vim.key(this.field, key);
     this.markInput();
-    if (this.kind === 'practice') this.trackVimKeys(key, outcome.deleted);
+    if (this.untimed) this.trackVimKeys(key, outcome.deleted);
     if (outcome.deleted) {
       this.applyDelete(outcome.deleted, size);
     } else {
@@ -954,10 +1137,10 @@ export class Game {
 
   private onDelete(action: DeleteAction): void {
     if (this.phase !== 'playing') return;
-    if (this.kind === 'practice') {
+    if (this.untimed) {
       const hadSelection = this.field.select !== null;
       const size = this.fieldSize();
-      const result = this.undo.record(this.field, () => this.runDelete(action));
+      const result = this.undo.record(this.field, () => this.runDelete(action), this.lessonCounters());
       this.readout = `${standardKeys(action, hadSelection)} -> ${describeDelete(result)}`;
       this.applyDelete(result, size);
       return;
@@ -999,6 +1182,7 @@ export class Game {
    */
   private applyDelete(result: DeleteResult, before: { chars: number; rows: number }): void {
     this.goalCol = this.field.caret.col;
+    if (this.kind === 'lesson' && (result.red > 0 || result.blue > 0)) this.lessonDeletes++;
     this.markInput();
 
     // Snap-out flash for each cleared block (at its pre-collapse position).
@@ -1055,6 +1239,11 @@ export class Game {
     this.clock.pause(now); // time stops while the celebration is up
     this.stageClock.pause(now); // the stage budget freezes too — no penalty for reading the screen
     this.clearedFlashMs = now; // also gates the backdrop delay in render (KDA-48)
+    if (this.kind === 'lesson') {
+      // a ★ is a clean clear on target; any clear passes (#44)
+      this.lessonStar = this.lessonDeletes <= this.lesson().target && this.mistakes === 0;
+      this.progress = recordLesson(this.mode, this.lesson().id, this.lessonStar);
+    }
     sfx('stageClear', undefined, SFX_STAGE_CLEAR_DELAY); // at the moment of clear, before the text (KDA-47)
   }
 
@@ -1089,7 +1278,7 @@ export class Game {
 
   /** A blue-touching delete = one strike; two strikes ends the run (spec §3). */
   private registerMistake(): void {
-    if (this.kind === 'practice') {
+    if (this.untimed) {
       this.mistakes++; // counted, never fatal (#43)
       this.strikeFlashMs = performance.now();
       return;
@@ -1190,14 +1379,7 @@ export class Game {
         this.mode === 'vim' ? { ...this.vim.status(), spans: this.vim.selection(this.field) } : null,
       helpOpen: this.helpOpen,
       menu: this.overlay === 'menu' ? this.menuView() : this.phase === 'training' ? this.trainingView() : null,
-      practice:
-        this.kind === 'practice'
-          ? {
-              mistakes: this.mistakes,
-              readout: this.readout,
-              board: this.practiceRandom ? `RANDOM ${String(this.practiceBoard.index + 1).padStart(2, '0')}` : null,
-            }
-          : null,
+      practice: this.untimed ? this.practiceView() : null,
       overReason: this.overReason,
       best: this.best.score,
       isNewBest: this.isNewBest,
@@ -1222,6 +1404,38 @@ export class Game {
         lastInputMs: this.lastInputMs,
         goFlashMs: this.goFlashMs,
       },
+    };
+  }
+
+  private practiceView(): PracticeView {
+    const base = { mistakes: this.mistakes, readout: this.readout };
+    if (this.kind === 'lesson') {
+      const lessons = this.lessons();
+      const l = this.lesson();
+      const n = (i: number): string => String(i).padStart(2, '0');
+      return {
+        ...base,
+        title: `LESSON ${n(this.lessonIndex + 1)}/${n(lessons.length)}`,
+        where: null,
+        lesson: {
+          title: l.title,
+          explain: l.explain,
+          keys: l.keys,
+          target: l.target,
+          deletes: this.lessonDeletes,
+          star: this.lessonStar,
+          last: this.lessonIndex === lessons.length - 1,
+          rows: l.board.length,
+        },
+      };
+    }
+    return {
+      ...base,
+      title: 'PRACTICE',
+      where: this.practiceRandom
+        ? ['BOARD', `RANDOM ${String(this.practiceBoard.index + 1).padStart(2, '0')}`]
+        : ['STAGE', String(this.stageIndex + 1).padStart(2, '0')],
+      lesson: null,
     };
   }
 

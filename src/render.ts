@@ -160,7 +160,7 @@ export interface MenuItem {
   id:
     | 'resume' | 'help' | 'music' | 'sfx' | 'mute' | 'quit' | 'soundtrack'
     | 'training' | 'reset' | 'next' | 'prev' // practice / title menu
-    | 'practice' | 'random' | 'lessons' | 'back'; // training picker
+    | 'practice' | 'random' | 'lessons' | 'back' | 'lesson'; // training picker, lesson list
   label: string;
   /** Current setting, shown right of the label. */
   value?: string;
@@ -177,15 +177,36 @@ export interface MenuView {
   subtitle: string;
   /** The key hint under the rows; the menu's own when absent. */
   hint?: string;
+  /** Tighter rows, for a long list (the lessons). */
+  compact?: boolean;
 }
 
-/** Free practice (#43): what replaces the run's stakes in the HUD. */
+/** Free practice (#43) and lessons (#44): what replaces the run's stakes in the HUD. */
 export interface PracticeView {
+  /** `PRACTICE` or `LESSON 03/14`, lit in the HUD. */
+  title: string;
+  /** Which board, as a HUD readout (`STAGE 07`, `BOARD RANDOM 23`); null for a lesson. */
+  where: [label: string, value: string] | null;
   mistakes: number;
   /** The last command and what it did (`d2w -> 14 RED · WORD X1.5`), or ''. */
   readout: string;
-  /** `RANDOM 23` on a generated random board; null on a stage's own board. */
-  board: string | null;
+  lesson: LessonView | null;
+}
+
+/** A lesson's panel under its board (#44). */
+export interface LessonView {
+  title: string;
+  explain: string[];
+  keys: string;
+  target: number;
+  /** Delete commands used so far (undo rolls them back). */
+  deletes: number;
+  /** The cleared attempt earned a ★. */
+  star: boolean;
+  /** This is the last lesson of the mode. */
+  last: boolean;
+  /** Rows the board started with — the panel sits below them. */
+  rows: number;
 }
 
 /** What Vim mode adds to the picture: the statusline and the Visual selection. */
@@ -713,6 +734,7 @@ export function render(ctx: Ctx, width: number, height: number, scene: Scene, no
   const boardShown = phase === 'playing' || phase === 'cleared';
   if (boardShown) {
     drawField(ctx, scene, lay);
+    if (scene.practice?.lesson) drawLessonPanel(ctx, width, scene.practice.lesson, scene.practice.mistakes);
     if (scene.vim?.flash) drawFlash(ctx, scene.field, scene.vim.flash, lay, width, height);
     drawDeletes(ctx, lay, nowMs);
     if (scene.vim) drawBlockCursor(ctx, scene.field, scene.vim, lay);
@@ -759,9 +781,10 @@ function drawHud(ctx: Ctx, width: number, hud: HudModel, fx: Fx, mode: Mode, now
     x += gtext(ctx, value, x, y, s) + GAP;
   };
   x += gtext(ctx, 'REDLINE', x, y, S_HUD) + GAP;
-  if (practice) x += gtext(ctx, 'PRACTICE', x, y, S_HUD_WHITE) + GAP;
-  if (practice?.board) kv('BOARD', practice.board);
-  else kv('STAGE', pad2(hud.stage));
+  if (practice) {
+    x += gtext(ctx, practice.title, x, y, S_HUD_WHITE) + GAP;
+    if (practice.where) kv(...practice.where);
+  } else kv('STAGE', pad2(hud.stage));
   kv('SCORE', String(hud.score).padStart(6, '0'));
   if (delta) {
     const p = (nowMs - delta.startMs) / DELTA_MS;
@@ -1137,9 +1160,22 @@ function drawStageCleared(ctx: Ctx, width: number, height: number, scene: Scene,
 
   // the banner snaps up to size for a little pop
   const grow = clamp01((nowMs - scene.fx.clearedFlashMs - CLEARED_BACKDROP_DELAY_MS) / 200);
+  const lesson = scene.practice?.lesson;
+  if (scene.practice && lesson) {
+    text(ctx, 'LESSON CLEARED', cx, cy - 110, C.white, F_BANNER * (0.8 + 0.2 * easeOut(grow)), 'center', C.amber, 22);
+    text(ctx, lesson.title, cx, cy - 46, C.dim, F_SM, 'center');
+    if (lesson.star) text(ctx, '★  ON TARGET, NO MISTAKES', cx, cy + 10, C.white, F_HUD, 'center', C.amber, 10);
+    else {
+      const used = `YOU USED ${lesson.deletes}${scene.practice.mistakes > 0 ? ` WITH ${scene.practice.mistakes} MISTAKE${scene.practice.mistakes > 1 ? 'S' : ''}` : ''}`;
+      text(ctx, `★ IS ${lesson.target} DELETE${lesson.target > 1 ? 'S' : ''} AND NO MISTAKES -- ${used}`, cx, cy + 10, C.amber, F_SM, 'center');
+    }
+    prompt(ctx, lesson.last ? 'PRESS ENTER FOR THE LESSON LIST' : 'PRESS ENTER FOR NEXT LESSON', cx, cy + 110, nowMs);
+    text(ctx, 'R RETRY THIS LESSON   ·   ESC LESSONS', cx, cy + 154, C.dim, F_SM, 'center');
+    return;
+  }
   if (scene.practice) {
     text(ctx, 'BOARD CLEARED', cx, cy - 110, C.white, F_BANNER * (0.8 + 0.2 * easeOut(grow)), 'center', C.amber, 22);
-    text(ctx, scene.practice.board ?? `STAGE ${pad2(scene.hud.stage)}`, cx, cy - 46, C.dim, F_SM, 'center');
+    text(ctx, scene.practice.where?.join(' ') ?? '', cx, cy - 46, C.dim, F_SM, 'center');
     statRow(ctx, cx, cy + 4, 'SCORE', thousands(scene.hud.score));
     statRow(ctx, cx, cy + 38, 'MISTAKES', String(scene.practice.mistakes), scene.practice.mistakes > 0 ? C.red : C.amber);
     prompt(ctx, 'PRESS ENTER FOR NEXT BOARD', cx, cy + 110, nowMs);
@@ -1190,12 +1226,14 @@ function drawEndScreen(ctx: Ctx, width: number, height: number, scene: Scene, no
 function drawMenu(ctx: Ctx, width: number, height: number, menu: MenuView): void {
   rect(ctx, 0, RULE_TOP + 1, width, height - RULE_TOP - 1, C.bg);
   const cx = width / 2;
-  const ROW = 50;
+  const ROW = menu.compact ? 38 : 50;
   const step = adv(F_HUD);
-  const LABEL_W = 16; // characters: the widest label plus a gap before the value
-  const rowW = (LABEL_W + 8) * step;
+  // Wide enough for the longest label, a gap, and the longest value with its `< >`.
+  const longest = (f: (i: MenuItem) => string): number => Math.max(0, ...menu.items.map((i) => charCount(f(i))));
+  const chars = Math.max(24, longest((i) => i.label) + 3 + longest((i) => (i.value === undefined ? '' : `< ${i.value} >`)));
+  const rowW = chars * step;
   const x0 = Math.round(cx - rowW / 2);
-  let y = midY(height) - (menu.items.length * ROW) / 2 - 70;
+  let y = Math.max(RULE_TOP + 60, midY(height) - (menu.items.length * ROW) / 2 - 70);
 
   text(ctx, menu.title, cx, y, C.amber, F_BANNER, 'center', C.amber, 16);
   y += 62;
@@ -1209,7 +1247,7 @@ function drawMenu(ctx: Ctx, width: number, height: number, menu: MenuView): void
       ctx.save();
       ctx.shadowColor = C.amber;
       ctx.shadowBlur = 10 * GLOW * dpr;
-      rect(ctx, x0 - 14, y - 20, rowW + 28, 40, C.amber);
+      rect(ctx, x0 - 14, y - ROW * 0.4, rowW + 28, ROW * 0.8, C.amber);
       ctx.restore();
     }
     const color = on ? C.bg : item.disabled ? C.dim : C.amber;
@@ -1224,6 +1262,29 @@ function drawMenu(ctx: Ctx, width: number, height: number, menu: MenuView): void
   y += 26;
   const hint = menu.hint ?? 'UP / DOWN  SELECT   ·   LEFT / RIGHT  CHANGE   ·   ENTER  CHOOSE   ·   ESC  CLOSE';
   text(ctx, hint, cx, y, C.dim, F_SM, 'center');
+}
+
+/**
+ * A lesson's panel (#44), a few rows under its board: the title, what the
+ * technique does, its keys, and the target for a ★ with the deletes used so far.
+ */
+function drawLessonPanel(ctx: Ctx, width: number, lesson: LessonView, mistakes: number): void {
+  let y = rowY(lesson.rows) + LH * 1.5;
+  rect(ctx, FIELD_OX, y - 26, width - FIELD_OX - PAD, 1, C.dim);
+  gtext(ctx, lesson.title, FIELD_OX, y, S_HUD);
+  y += 42;
+  for (const line of lesson.explain) {
+    text(ctx, line, FIELD_OX, y, C.amber, F_SM);
+    y += 32;
+  }
+  y += 14;
+  text(ctx, 'KEYS', FIELD_OX, y, C.dim, F_SM);
+  text(ctx, lesson.keys, FIELD_OX + 110, y, C.white, F_SM, 'left', C.amber, 7);
+  y += 34;
+  text(ctx, 'TARGET', FIELD_OX, y, C.dim, F_SM);
+  const over = lesson.deletes > lesson.target || mistakes > 0;
+  const goal = `★ ${lesson.target} DELETE${lesson.target > 1 ? 'S' : ''}, NO MISTAKES   ·   USED ${lesson.deletes}`;
+  text(ctx, goal, FIELD_OX + 110, y, over ? C.red : C.amber, F_SM);
 }
 
 // Help screen geometry — `vim-lazyvim.test.ts` checks every key list against these numbers.

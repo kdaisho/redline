@@ -33,24 +33,29 @@ export function boardKey(field: FieldState): string {
   return field.lines.map((ln) => ln.map((b) => (b.color === 'red' ? 'r' : b.color === 'blue' ? 'b' : '_') + b.ch).join('')).join('\n');
 }
 
-/** Undo history for one board. Unbounded: a practice board is small. */
-export class UndoStack {
-  private stack: Snapshot[] = [];
+/**
+ * Undo history for one board. Unbounded: a practice board is small. Each step
+ * can carry a `tag` — a lesson stores its delete / mistake counters there, so an
+ * undo rolls them back with the board.
+ */
+export class UndoStack<T = undefined> {
+  private stack: { snap: Snapshot; tag: T | undefined }[] = [];
 
   /** Run `change` on the field; if it changed the board, remember the board as it was before. */
-  record<T>(field: FieldState, change: () => T): T {
+  record<R>(field: FieldState, change: () => R, tag?: T): R {
     const before = snapshot(field);
     const key = boardKey(field);
     const out = change();
-    if (boardKey(field) !== key) this.stack.push(before);
+    if (boardKey(field) !== key) this.stack.push({ snap: before, tag });
     return out;
   }
 
   /** Restore the board before the last change. False when there is nothing to undo. */
-  undo(field: FieldState): boolean {
-    const snap = this.stack.pop();
-    if (!snap) return false;
-    restore(field, snap);
+  undo(field: FieldState, onTag?: (tag: T | undefined) => void): boolean {
+    const step = this.stack.pop();
+    if (!step) return false;
+    restore(field, step.snap);
+    onTag?.(step.tag);
     return true;
   }
 
