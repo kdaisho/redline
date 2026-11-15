@@ -49,6 +49,103 @@ export function keys(str: string): string[] {
   return str.match(/<[^>]+>|./gu) ?? [];
 }
 
+/**
+ * Standard solutions as chords: modifiers `⇧ ⌥ ⌘` then a key `← → ↑ ↓ ⌫ ⌦`,
+ * space-separated, `×n` to repeat: `'→×5 ⇧⌘→ ⌫'`.
+ */
+export function chords(str: string): string[] {
+  return str
+    .split(/\s+/)
+    .filter(Boolean)
+    .flatMap((tok) => {
+      const m = /^(.*?)×(\d+)$/.exec(tok);
+      return m ? Array<string>(Number(m[2])).fill(m[1]) : [tok];
+    });
+}
+
+const KEY_OF: Record<string, string> = {
+  '←': 'ArrowLeft',
+  '→': 'ArrowRight',
+  '↑': 'ArrowUp',
+  '↓': 'ArrowDown',
+  '⌫': 'Backspace',
+  '⌦': 'Delete',
+};
+
+/** A chord as the keydown it stands for (the fields the Standard keymap reads). */
+export function chordEvent(chord: string): Pick<KeyboardEvent, 'key' | 'shiftKey' | 'altKey' | 'metaKey' | 'ctrlKey'> {
+  const key = KEY_OF[chord.slice(-1)];
+  if (!key) throw new Error(`unknown chord ${chord}`);
+  const mods = chord.slice(0, -1);
+  return { key, shiftKey: mods.includes('⇧'), altKey: mods.includes('⌥'), metaKey: mods.includes('⌘'), ctrlKey: false };
+}
+
+const STANDARD: Lesson[] = [
+  {
+    id: 'std-chars',
+    title: 'ONE CHARACTER',
+    explain: ['← → ↑ ↓ move the caret.', '⌫ deletes the character to its left, ⌦ (fn-⌫) the one to its right.'],
+    keys: '← → ↑ ↓   ⌫  ⌦',
+    board: ['«user»#«.name»', '«x = »%«y»'],
+    target: 2,
+    solution: chords('→×5 ⌫ ↓ ⌦'),
+  },
+  {
+    id: 'std-words',
+    title: 'WORDS',
+    explain: ['⌥← ⌥→ jump a word -- everything between two spaces.', '⌥⌫ deletes the word to the left, ⌥⌦ the word to the right.'],
+    keys: '⌥← ⌥→   ⌥⌫  ⌥⌦',
+    board: ['«keep» crash «ok»', '«go» panic(now)'],
+    target: 2,
+    solution: chords('⌥→ ⌥⌦ ↓ ⌘→ ⌥⌫'),
+  },
+  {
+    id: 'std-edges',
+    title: 'TO THE LINE EDGE',
+    explain: ['⌘⌫ deletes to the start of the line, ⌘⌦ to its end.', 'A blue word in the middle: two edge deletes, never the whole line.'],
+    keys: '⌘← ⌘→   ⌘⌫  ⌘⌦',
+    board: ['trash(1) «keep()» junk(2)', 'oops.drop(x)'],
+    target: 3,
+    solution: chords('⌥→ ⌘⌫ ⌥→ ⌘⌦ ↓ ⌘→ ⌘⌫'),
+  },
+  {
+    id: 'std-select',
+    title: 'SELECT',
+    explain: ['⇧ + any move grows a selection; any delete key removes all of it.', 'One selection, one delete -- and it scores x2.'],
+    keys: '⇧→  ⇧⌥→  ⇧⌘→   then ⌫',
+    board: ['«a» bad stuff here «b»', '«id = »12345«;»'],
+    target: 2,
+    solution: chords('⌥→ ⇧⌥→×3 ⌫ ↓ ⌘← →×5 ⇧→×5 ⌫'),
+  },
+  {
+    id: 'std-rows',
+    title: 'MANY ROWS',
+    explain: ['⇧↓ grows the selection a row at a time; ⇧⌘→ takes it to the end.', 'Sweep the slab in one go -- but stop above the blue row.'],
+    keys: '⇧↓  ⇧⌘→   then ⌫',
+    board: ['junk(1)', 'junk(2)', 'junk(3)', '«keep()»', 'junk(4)'],
+    target: 2,
+    solution: chords('⇧↓×2 ⇧⌘→ ⌫ ↓×2 ⌘→ ⌘⌫'),
+  },
+  {
+    id: 'std-glued',
+    title: 'GLUED COLOURS',
+    explain: ['Red touching blue is one word to ⌥⌫ -- it would take the blue too.', 'Select those characters precisely instead.'],
+    keys: '→  ⇧→  ⇧⌘→   then ⌫',
+    board: ['«render».hack(dom)', 'drop(db)«;»'],
+    target: 2,
+    solution: chords('→×6 ⇧⌘→ ⌫ ↓ ⌘← ⇧→×8 ⌫'),
+  },
+  {
+    id: 'std-moverow',
+    title: 'MOVE ROWS',
+    explain: ['⌥↑ ⌥↓ move the row (or every selected row) up and down.', 'Move the blue row out of the slab, then clear it all in one.'],
+    keys: '⌥↑  ⌥↓   then ⇧↓ ⇧⌘→ ⌫',
+    board: ['junk(1)', '«keep()»', 'junk(2)', 'junk(3)'],
+    target: 1,
+    solution: chords('↓ ⌥↓×2 ⌘↑ ⇧↓×2 ⇧⌘→ ⌫'),
+  },
+];
+
 const VIM: Lesson[] = [
   {
     id: 'vim-x',
@@ -183,7 +280,7 @@ const VIM: Lesson[] = [
 ];
 
 export const LESSONS: Record<Mode, Lesson[]> = {
-  standard: [],
+  standard: STANDARD,
   vim: VIM,
 };
 

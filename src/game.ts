@@ -4,20 +4,17 @@ import {
   type MoveAction,
   type DeleteResult,
   type Chord,
-  moveCaret,
-  deleteBackward,
-  deleteWordLeft,
-  deleteToLineStart,
-  deleteForward,
-  deleteWordRight,
-  deleteToLineEnd,
+  type DeleteAction,
+  applyMove,
+  applySelect,
+  standardDelete,
   moveRows,
   isMistake,
   redsRemaining,
   posEqual,
   createField,
 } from './state.ts';
-import { attachInput, type DeleteAction, type Keymap } from './input.ts';
+import { attachInput, type Keymap } from './input.ts';
 import { createStandardKeymap } from './keymaps/standard.ts';
 import { createVimKeymap } from './keymaps/vim.ts';
 import { Vim } from './vim.ts';
@@ -1023,12 +1020,10 @@ export class Game {
 
   private onMove(action: MoveAction): void {
     if (this.phase !== 'playing') return;
-    const next = moveCaret(this.field, this.field.caret, this.goalCol, action);
-    const moved = !posEqual(next.caret, this.field.caret);
+    const was = this.field.caret;
     const hadSelection = this.field.select !== null;
-    this.field.caret = next.caret;
-    this.goalCol = next.goalCol;
-    this.field.select = null; // plain movement collapses any selection
+    this.goalCol = applyMove(this.field, this.goalCol, action); // also collapses any selection
+    const moved = !posEqual(was, this.field.caret);
     this.markInput();
     // A move that drops a selection sounds as the clear; one that hits a wall is silent.
     if (hadSelection) sfx('selClear');
@@ -1037,16 +1032,10 @@ export class Game {
 
   private onSelect(action: MoveAction): void {
     if (this.phase !== 'playing') return;
-    // Anchor stays put from the first extend; the head moves like a caret.
-    const anchor = this.field.select ? this.field.select.anchor : { ...this.field.caret };
-    const moved = moveCaret(this.field, this.field.caret, this.goalCol, action);
-    const changed = !posEqual(moved.caret, this.field.caret);
+    const was = this.field.caret;
     const hadSelection = this.field.select !== null;
-    this.field.caret = moved.caret;
-    this.goalCol = moved.goalCol;
-    const head = moved.caret;
-    // Collapsing back onto the anchor clears the selection.
-    this.field.select = posEqual(anchor, head) ? null : { anchor, head };
+    this.goalCol = applySelect(this.field, this.goalCol, action);
+    const changed = !posEqual(was, this.field.caret);
     this.markInput();
     if (this.field.select === null) {
       if (hadSelection) sfx('selClear');
@@ -1150,28 +1139,7 @@ export class Game {
   }
 
   private runDelete(action: DeleteAction): DeleteResult {
-    let result: DeleteResult;
-    switch (action) {
-      case 'backward':
-        result = deleteBackward(this.field);
-        break;
-      case 'word-left':
-        result = deleteWordLeft(this.field);
-        break;
-      case 'to-line-start':
-        result = deleteToLineStart(this.field);
-        break;
-      case 'forward':
-        result = deleteForward(this.field);
-        break;
-      case 'word-right':
-        result = deleteWordRight(this.field);
-        break;
-      case 'to-line-end':
-        result = deleteToLineEnd(this.field);
-        break;
-    }
-    return result;
+    return standardDelete(this.field, action);
   }
 
   /**

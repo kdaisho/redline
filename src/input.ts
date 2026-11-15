@@ -8,22 +8,12 @@
  * We run our own repeat clock (not the OS key-repeat) so the cadence is
  * consistent regardless of system settings.
  */
-import { type MoveAction } from './state.ts';
+import { type MoveAction, type DeleteAction } from './state.ts';
+
+export type { DeleteAction };
 
 const REPEAT_DELAY = 280; // ms held before auto-repeat begins
 const REPEAT_RATE = 45; // ms between repeats once it kicks in
-
-/**
- * Which delete chord was pressed. Backward = Backspace family (spec §2);
- * forward = macOS fn+Delete family (KDA-51), mirrored rightward.
- */
-export type DeleteAction =
-  | 'backward'
-  | 'word-left'
-  | 'to-line-start'
-  | 'forward'
-  | 'word-right'
-  | 'to-line-end';
 
 /** The field actions every mode's keymap is built over. */
 export interface FieldActions {
