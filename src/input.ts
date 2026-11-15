@@ -210,7 +210,10 @@ export function attachInput(handlers: InputHandlers, target: Window = window): (
     // that is otherwise global.
     const action = keymap.resolve(e);
     if (!action) {
-      globalKey(e, true);
+      if (globalKey(e, true)) return;
+      // Keys the mode leaves unused must not take focus off the game mid-stage (#35):
+      // Tab would move to the browser's toolbar, and / or ' opens Firefox's Quick Find.
+      if (e.key === 'Tab' || ((e.key === '/' || e.key === "'") && !e.metaKey && !e.ctrlKey)) e.preventDefault();
       return;
     }
     e.preventDefault();

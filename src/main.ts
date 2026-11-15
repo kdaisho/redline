@@ -32,6 +32,22 @@ function resize() {
 resize();
 window.addEventListener('resize', resize);
 
+// Moving the window to a display with another pixel ratio fires no resize (#35).
+// A resolution query matches only the current ratio, so re-arm it after each change.
+function watchPixelRatio(): void {
+  if (typeof window.matchMedia !== 'function') return;
+  const mq = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+  mq.addEventListener?.(
+    'change',
+    () => {
+      resize();
+      watchPixelRatio();
+    },
+    { once: true },
+  );
+}
+watchPixelRatio();
+
 // Tell the stage generator how many blocks/rows fit at this canvas size.
 setMaxStageCols(playfieldCols(WIDTH));
 setMaxStageRows(playfieldRows(HEIGHT));
