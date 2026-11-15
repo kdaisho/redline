@@ -402,7 +402,17 @@ export interface BgmEngine {
  * music's own limiter and soft clipper (part of the approved sound); the game's
  * mixer adds the music volume and the shared final limiter after it.
  */
-export function createBgmEngine(ctx: BaseAudioContext, destination: AudioNode): BgmEngine {
+export interface BgmEngineOptions {
+  /**
+   * Seconds of audio scheduled ahead of the clock (default 0.2). The soundtrack
+   * page asks for a few seconds so music survives a background tab, whose timers
+   * wake only about once a second. Timing and sound are unchanged either way.
+   */
+  lookahead?: number;
+}
+
+export function createBgmEngine(ctx: BaseAudioContext, destination: AudioNode, options: BgmEngineOptions = {}): BgmEngine {
+  const lookahead = Math.max(LOOKAHEAD, options.lookahead ?? LOOKAHEAD);
   const cache: Partial<Record<TrackId, CompiledTrack>> = {};
   let rig: Rig | null = null;
   const waves: Record<string, PeriodicWave> = { pulse25: pulseWave(ctx, 0.25), pulse12: pulseWave(ctx, 0.125) };
@@ -672,7 +682,7 @@ export function createBgmEngine(ctx: BaseAudioContext, destination: AudioNode): 
 
   function tick(r: Rig): void {
     const now = ctx.currentTime;
-    const horizon = now + LOOKAHEAD;
+    const horizon = now + lookahead;
     const ev = r.comp.events;
     const loopDur = r.comp.steps * r.spb;
     for (;;) {

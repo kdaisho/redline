@@ -67,6 +67,8 @@ export interface InputHandlers {
   pickMode(index: number): void;
   /** Tab on a screen: step to the next mode. */
   cycleMode(): void;
+  /** S on a screen: open the soundtrack page (#31). The game decides which screens allow it. */
+  soundtrack?(): void;
   /**
    * Whether gameplay input is currently accepted. False during the countdown,
    * stage-clear, start, and game-over screens — gating here (not just in the
@@ -142,6 +144,10 @@ export function attachInput(handlers: InputHandlers, target: Window = window): (
     if (e.key === 'Tab' && !e.metaKey && !e.ctrlKey && !e.altKey) {
       e.preventDefault(); // keep focus on the game
       if (!e.repeat) handlers.cycleMode();
+      return true;
+    }
+    if ((e.key === 's' || e.key === 'S') && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (!e.repeat) handlers.soundtrack?.();
       return true;
     }
     if (/^[1-9]$/.test(e.key) && !e.metaKey && !e.ctrlKey && !e.altKey) {

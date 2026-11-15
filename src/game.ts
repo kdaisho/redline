@@ -309,6 +309,10 @@ export class Game {
       menu: () => this.onMenu(),
       pickMode: (i) => this.onPickMode(i),
       cycleMode: () => this.onCycleMode(),
+      soundtrack: () => {
+        // only from the title screen — never mid-run or on a result screen
+        if (this.phase === 'start' && !this.helpOpen) window.location.assign('soundtrack.html');
+      },
       isActive: () => this.phase === 'playing' && !this.helpOpen,
     });
     this.best = loadBest(this.mode);
