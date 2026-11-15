@@ -338,8 +338,7 @@ boards** (a generated board from stages 6–50 with a seed no run uses), and Les
   random board and previous goes back through the ones already played.
 - Practice never records a best.
 
-**Lessons (#44)** — LESSONS on the training picker (shown `★ n / N`; `SOON` for a mode
-without lessons yet) opens the lesson list, with each lesson's mark (`★` or `DONE`).
+**Lessons (#44, #45)** — LESSONS on the training picker (shown `★ n / N`) opens the lesson list, with each lesson's mark (`★` or `DONE`).
 A lesson is free practice on a small hand-built board, plus a panel under the board:
 its title, what the technique does, the keys, and the **target** — at most N delete
 commands and no mistake earns a ★. Any clear passes; the target never blocks.
@@ -357,6 +356,12 @@ commands and no mistake earns a ★. Any clear passes; the target never blocks.
 - **Vim (14):** `x` and `hjkl` · `w b e`, `dw de` · `diw daw` · `dd D` · counts · `f t`, `df, dt)`
   · `%`, `d%` · `di( da" da[` · mini.ai `daa dau diu` · Visual `v V` · Visual Block ·
   search `/ n d/` · flash `s`, `ds` · `.` and `Alt-j/k`.
+- **Standard (7, #45):** arrows, `⌫ ⌦` · `⌥` words, `⌥⌫ ⌥⌦` · `⌘⌫ ⌘⌦` around a blue word ·
+  `⇧` selections · `⇧↓ ⇧⌘→` over a slab, stopping above blue · glued red-blue, selected by
+  character (the word chord would be a mistake) · `⌥↑ ⌥↓` to move blue out of a slab.
+  Their solutions are written as chords (`'→×5 ⇧⌘→ ⌫'`) and the test plays them through
+  the real Standard keymap and the same field actions as the game (`applyMove`,
+  `applySelect`, `standardDelete` in `state.ts`).
 
 ## 7. Rendering / theme
 The theme is **Phosphor** (chosen in #10, built in #11): an amber CRT terminal.

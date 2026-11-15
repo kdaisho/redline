@@ -556,6 +556,58 @@ export function moveRows(state: FieldState, dir: -1 | 1): boolean {
   return true;
 }
 
+// ── Standard mode's field actions ─────────────────────────────────────────────
+/**
+ * Which delete chord was pressed. Backward = Backspace family (spec §2);
+ * forward = macOS fn+Delete family (KDA-51), mirrored rightward.
+ */
+export type DeleteAction =
+  | 'backward'
+  | 'word-left'
+  | 'to-line-start'
+  | 'forward'
+  | 'word-right'
+  | 'to-line-end';
+
+/** Run one Standard delete chord. Mutates `state`. */
+export function standardDelete(state: FieldState, action: DeleteAction): DeleteResult {
+  switch (action) {
+    case 'backward':
+      return deleteBackward(state);
+    case 'word-left':
+      return deleteWordLeft(state);
+    case 'to-line-start':
+      return deleteToLineStart(state);
+    case 'forward':
+      return deleteForward(state);
+    case 'word-right':
+      return deleteWordRight(state);
+    case 'to-line-end':
+      return deleteToLineEnd(state);
+  }
+}
+
+/** Plain movement: move the caret and drop any selection. Returns the new sticky column. */
+export function applyMove(state: FieldState, goalCol: number, action: MoveAction): number {
+  const next = moveCaret(state, state.caret, goalCol, action);
+  state.caret = next.caret;
+  state.select = null;
+  return next.goalCol;
+}
+
+/**
+ * Shift + movement: extend the selection. The anchor stays put from the first
+ * extend; the head moves like a caret; collapsing back onto the anchor clears
+ * the selection. Returns the new sticky column.
+ */
+export function applySelect(state: FieldState, goalCol: number, action: MoveAction): number {
+  const anchor = state.select ? state.select.anchor : { ...state.caret };
+  const moved = moveCaret(state, state.caret, goalCol, action);
+  state.caret = moved.caret;
+  state.select = posEqual(anchor, moved.caret) ? null : { anchor, head: moved.caret };
+  return moved.goalCol;
+}
+
 // ── internal ───────────────────────────────────────────────────────────────
 function clamp(n: number, lo: number, hi: number): number {
   return n < lo ? lo : n > hi ? hi : n;
