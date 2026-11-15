@@ -311,6 +311,33 @@ scores as the command that runs at the target (`dr…iw` word, `dr…d` line).
 - **Best is stored per mode**: Standard in `redline.best` (the key used before modes
   existed, so an older best carries over), other modes in `redline.best.<mode>`.
 
+## 6a. Training (#43)
+A place to try moves without the run's stakes. `T` on the title screen (or TRAINING
+in its Esc menu) opens the **training picker**, in the mode picked on the title
+screen: **Practice** on a chosen stage's board (`←` `→` pick stage 1–50), **Random
+boards** (a generated board from stages 6–50 with a seed no run uses), and Lessons
+(coming in #44 / #45). `Esc` goes back to the title.
+
+**Free practice** plays a board like a stage, except:
+- **No limit, no countdown, no game over.** The HUD shows PRACTICE, the stage (or
+  `RANDOM nn`), score and MISTAKES instead of STRIKES. A blue delete still flashes and
+  counts as a mistake; the board stays up.
+- **Undo:** `u` in Vim (only a bare Normal-mode `u` — after `d` / `i` / `a` it is still
+  mini.ai's call object, as in `diu`), `⌘Z` in Standard. Each press restores the board,
+  caret and selection to before the last change: a delete or a row move. The history
+  is per board and unbounded; it does not roll back score or the mistake tally. A real
+  run has no undo.
+- **Readout:** HUD row 2 (the LIMIT row in a run) shows the last delete command and what it
+  did, e.g. `d2w -> 14 RED · WORD X1.5`, `⌥⌫ -> 8 RED · WORD X1.5`,
+  `dd -> 7 RED + 6 BLUE -- MISTAKE`. Vim shows every key of the command (`vjjd`,
+  `d/foo⏎`); Standard shows the chord.
+- **Esc menu:** Resume, Reset board, Next board, Previous board, Keys, the volumes,
+  Sound, Quit to training. Leaving the tab does not open it (there is no clock).
+- **Cleared board:** `Enter` next board, `R` retry the same board, `Esc` training.
+  Next and previous wrap between stage 50 and 1; with random boards, next is a fresh
+  random board and previous goes back through the ones already played.
+- Practice never records a best.
+
 ## 7. Rendering / theme
 The theme is **Phosphor** (chosen in #10, built in #11): an amber CRT terminal.
 

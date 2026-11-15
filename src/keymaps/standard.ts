@@ -43,6 +43,16 @@ export function createStandardKeymap(actions: FieldActions): Keymap {
 
   return {
     resolve(e: KeyboardEvent): KeyAction | null {
+      // ⌘Z: undo, which only free practice acts on (#43). ⇧⌘Z (redo) is not ours.
+      if (e.metaKey && !e.shiftKey && !e.altKey && (e.key === 'z' || e.key === 'Z')) {
+        return {
+          fire: () => {
+            actions.undo();
+            return false;
+          },
+          passive: true,
+        };
+      }
       // Backspace family — also stops the browser's back-navigation.
       if (e.key === 'Backspace') {
         return once(e.metaKey ? 'to-line-start' : e.altKey ? 'word-left' : 'backward');

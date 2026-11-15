@@ -203,6 +203,7 @@ describe('controller + standard keymap', () => {
       select: (a) => calls.push(`select:${a}`),
       delete: (a) => calls.push(`delete:${a}`),
       moveRow: (d) => calls.push(`row:${d}`),
+      undo: () => calls.push('undo'),
     });
     const detach = attachInput(
       {

@@ -38,6 +38,7 @@ const GAME_KEYS: HelpSection = {
     ['F1 · F2', 'also: this help · mute / unmute everything'],
     ['F3 F4 · F6 F7', 'also: volume - / +, music · effects'],
     ['1  2  Tab', 'start screen: pick the mode'],
+    ['T', 'start screen: training -- practice with no clock'],
   ],
 };
 
@@ -66,6 +67,7 @@ const STANDARD_HELP: HelpSection[] = [
       ['⌥⌫  ⌥⌦', '×1.5  word left / right'],
       ['⌘⌫  ⌘⌦', '×2    to line start / end'],
       ['any of them', '×2    with a selection: delete the selection'],
+      ['⌘Z', 'training only: undo the last change'],
     ],
   },
   {
@@ -172,7 +174,7 @@ const VIM_HELP: HelpSection[] = [
     title: 'NOT IN THIS VIM',
     rows: [
       ['i a o r J ~ …', 'no Insert mode: typing keys do nothing'],
-      ['u  Ctrl-r', 'no undo'],
+      ['u  Ctrl-r', 'no undo (training: u undoes)'],
       ['y p " q @ m \'', 'no yank / put, registers, macros, marks'],
       [':', 'no command line · search is plain text, not regex'],
       ['S  R  Ctrl-Space  if ic io it', 'treesitter objects: no syntax tree here'],

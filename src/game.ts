@@ -1,4 +1,4 @@
-import { render, type Scene, type Flash, type MenuItem } from './render.ts';
+import { render, type Scene, type Flash, type MenuItem, type MenuView } from './render.ts';
 import {
   type FieldState,
   type MoveAction,
@@ -43,6 +43,15 @@ import {
   secondsLeft,
   lowTimeTick,
 } from './audio/cues.ts';
+import {
+  type PracticeBoard,
+  UndoStack,
+  describeDelete,
+  standardKeys,
+  vimKeyLabel,
+  nextIndex,
+  randomBoard,
+} from './practice.ts';
 
 const MAX_STRIKES = 2; // spec §3
 const FLASH_LIFETIME_MS = 220; // prune snap-out flashes after they finish drawing
@@ -241,7 +250,13 @@ export class Game {
   private stageIndex = 0; // 0-based
   private strikes = 0;
   private goalCol = 0; // sticky column for vertical movement
-  private phase: 'start' | 'countdown' | 'playing' | 'cleared' | 'over' | 'won' = 'start';
+  private phase: 'start' | 'training' | 'countdown' | 'playing' | 'cleared' | 'over' | 'won' = 'start';
+  /**
+   * What is being played (#43). A `run` is the real game: a clock per stage, two
+   * strikes end it. `practice` has no limit, mistakes are only counted, and the
+   * board can be undone, reset, or swapped for another.
+   */
+  private kind: 'run' | 'practice' = 'run';
   private overReason: 'strikes' | 'timeout' = 'strikes'; // why the run ended (game-over subtitle)
   private best: Best = { score: 0, stage: 0, timeMs: 0 };
   private isNewBest = false;
@@ -274,6 +289,17 @@ export class Game {
   private countdownFresh = false; // true → start the clock on finish; false → resume
   private goFlashMs = -Infinity; // when "GO" should flash over the revealed board
 
+  // ── training (#43) ──
+  private trainingIndex = 0; // selected row of the training picker
+  private trainingStage = 0; // stage picked for free practice (0-based)
+  private practiceBoard: PracticeBoard = { index: 0, seed: 0 };
+  private practiceRandom = false; // RANDOM BOARDS: each next board is a fresh generated one
+  private practiceHistory: PracticeBoard[] = []; // random boards already played, for PREV
+  private readonly undo = new UndoStack();
+  private mistakes = 0; // practice counts mistakes instead of ending on them
+  private readout = ''; // the last command and what it did
+  private vimKeys: string[] = []; // keys of the Vim command being typed, for the readout
+
   // ── transient visual effects (KDA-42), timed on the animation clock ──
   private flashes: Flash[] = [];
   private lastInputMs = 0;
@@ -292,6 +318,7 @@ export class Game {
       select: (a) => this.onSelect(a),
       delete: (a) => this.onDelete(a),
       moveRow: (d) => this.onMoveRow(d),
+      undo: () => this.onUndo(),
     });
     const vim = createVimKeymap((key) => this.onVimKey(key));
     this.keymaps = { standard, vim };
@@ -322,6 +349,12 @@ export class Game {
         // only from the title screen — never mid-run or on a result screen
         if (this.phase === 'start' && this.overlay === 'none') window.location.assign('soundtrack.html');
       },
+      training: () => {
+        if (this.phase === 'start' && this.overlay === 'none') this.openTraining();
+      },
+      retry: () => {
+        if (this.kind === 'practice' && this.phase === 'cleared') this.loadPracticeBoard(this.practiceBoard);
+      },
       isActive: () => this.phase === 'playing' && this.overlay === 'none',
     });
     this.best = loadBest(this.mode);
@@ -340,7 +373,8 @@ export class Game {
     // Leaving the tab or the window mid-stage pauses the run (#35): the clocks run
     // on wall time, so without this a 20 s Cmd-Tab would end the stage on time.
     const pauseIfPlaying = (): void => {
-      if (this.phase === 'playing' && this.overlay === 'none') this.openMenu();
+      // practice has no clock to protect
+      if (this.phase === 'playing' && this.overlay === 'none' && this.kind === 'run') this.openMenu();
     };
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') pauseIfPlaying();
@@ -354,9 +388,10 @@ export class Game {
       this.closeHelp();
       return;
     }
-    if (this.phase === 'playing' || this.phase === 'countdown') return;
+    if (this.phase === 'playing' || this.phase === 'countdown' || this.phase === 'training') return;
     if (this.phase === 'cleared') {
-      this.advanceStage();
+      if (this.kind === 'practice') this.stepPracticeBoard(1);
+      else this.advanceStage();
       return;
     }
     sfx('menuConfirm');
@@ -417,14 +452,41 @@ export class Game {
     const s = audioSettings();
     const level = (bus: 'music' | 'sfx'): string => (s[bus].muted ? 'OFF' : `${s[bus].volume} / ${MAX_VOLUME}`);
     const playing = this.phase === 'playing';
+    if (playing && this.kind === 'practice') {
+      return [
+        { id: 'resume', label: 'RESUME' },
+        { id: 'reset', label: 'RESET BOARD' },
+        { id: 'next', label: 'NEXT BOARD' },
+        { id: 'prev', label: 'PREVIOUS BOARD', disabled: this.practiceRandom && this.practiceHistory.length === 0 },
+        { id: 'help', label: 'KEYS' },
+        { id: 'music', label: 'MUSIC', value: level('music'), adjustable: true },
+        { id: 'sfx', label: 'EFFECTS', value: level('sfx'), adjustable: true },
+        { id: 'mute', label: 'SOUND', value: this.muted ? 'OFF' : 'ON' },
+        { id: 'training', label: 'QUIT TO TRAINING' },
+      ];
+    }
     return [
       { id: 'resume', label: playing ? 'RESUME' : 'CLOSE' },
       { id: 'help', label: 'KEYS' },
       { id: 'music', label: 'MUSIC', value: level('music'), adjustable: true },
       { id: 'sfx', label: 'EFFECTS', value: level('sfx'), adjustable: true },
       { id: 'mute', label: 'SOUND', value: this.muted ? 'OFF' : 'ON' },
-      playing ? { id: 'quit', label: 'QUIT TO TITLE' } : { id: 'soundtrack', label: 'SOUNDTRACK' },
+      ...(playing
+        ? [{ id: 'quit', label: 'QUIT TO TITLE' } as const]
+        : [{ id: 'training', label: 'TRAINING' } as const, { id: 'soundtrack', label: 'SOUNDTRACK' } as const]),
     ];
+  }
+
+  /** The menu as drawn: its rows plus the heading that says what it is. */
+  private menuView(): MenuView {
+    const playing = this.phase === 'playing';
+    const practice = playing && this.kind === 'practice';
+    return {
+      items: this.menuItems(),
+      index: this.menuIndex,
+      title: practice ? 'PRACTICE' : playing ? 'PAUSED' : 'OPTIONS',
+      subtitle: practice ? 'NO CLOCK -- TAKE YOUR TIME' : playing ? 'THE CLOCK IS STOPPED' : 'SOUND AND KEYS',
+    };
   }
 
   private openMenu(): void {
@@ -443,13 +505,16 @@ export class Game {
 
   /** Keys while the pause menu is up. Every key is the menu's, so nothing leaks to the board. */
   private onOverlayKey(e: KeyboardEvent): boolean {
+    if (this.phase === 'training' && this.overlay === 'none') return this.onTrainingKey(e);
     if (this.overlay !== 'menu') return false;
     if (e.metaKey || e.ctrlKey) return false; // leave browser shortcuts alone
     const items = this.menuItems();
     const item = items[this.menuIndex];
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
     const move = (d: number): void => {
-      this.menuIndex = (this.menuIndex + d + items.length) % items.length;
+      // disabled rows are skipped; there is always an enabled one (RESUME)
+      do this.menuIndex = (this.menuIndex + d + items.length) % items.length;
+      while (items[this.menuIndex].disabled);
       sfx('menuMove');
     };
     const adjust = (d: -1 | 1): void => {
@@ -470,6 +535,7 @@ export class Game {
   }
 
   private activateMenuItem(item: MenuItem): void {
+    if (item.disabled) return;
     switch (item.id) {
       case 'resume':
         this.closeMenu();
@@ -492,7 +558,149 @@ export class Game {
       case 'soundtrack':
         window.location.assign('soundtrack.html');
         break;
+      case 'training':
+        this.setOverlay('none');
+        this.openTraining();
+        break;
+      case 'reset':
+        this.setOverlay('none');
+        this.loadPracticeBoard(this.practiceBoard);
+        break;
+      case 'next':
+      case 'prev':
+        this.setOverlay('none');
+        this.stepPracticeBoard(item.id === 'next' ? 1 : -1);
+        break;
     }
+  }
+
+  // ── training (#43) ──
+  /** The training picker's rows. Lessons arrive with #44 / #45. */
+  private trainingItems(): MenuItem[] {
+    return [
+      { id: 'practice', label: 'PRACTICE', value: `STAGE ${String(this.trainingStage + 1).padStart(2, '0')}`, adjustable: true },
+      { id: 'random', label: 'RANDOM BOARDS' },
+      { id: 'lessons', label: 'LESSONS', value: 'SOON', disabled: true },
+      { id: 'back', label: 'BACK' },
+    ];
+  }
+
+  private trainingView(): MenuView {
+    return {
+      items: this.trainingItems(),
+      index: this.trainingIndex,
+      title: 'TRAINING',
+      subtitle: `${MODES.find((m) => m.id === this.mode)?.label ?? ''} MODE -- NO CLOCK, MISTAKES DON'T END IT`,
+      hint: 'UP / DOWN  SELECT   ·   LEFT / RIGHT  STAGE   ·   ENTER  START   ·   ESC  BACK',
+    };
+  }
+
+  /** The training picker, from the title screen (T, or the menu) or from practice. */
+  private openTraining(): void {
+    // coming back from practice: the picker shows the stage that was being practised
+    if (this.kind === 'practice' && !this.practiceRandom) this.trainingStage = this.practiceBoard.index;
+    this.toTitle();
+    this.phase = 'training';
+  }
+
+  /** Keys on the training picker — all of them are the picker's. */
+  private onTrainingKey(e: KeyboardEvent): boolean {
+    if (e.metaKey || e.ctrlKey) return false;
+    const items = this.trainingItems();
+    const item = items[this.trainingIndex];
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    const move = (d: number): void => {
+      do this.trainingIndex = (this.trainingIndex + d + items.length) % items.length;
+      while (items[this.trainingIndex].disabled);
+      sfx('menuMove');
+    };
+    const stage = (d: -1 | 1): void => {
+      if (item.id !== 'practice') return;
+      this.trainingStage = nextIndex(this.trainingStage, d);
+      sfx('menuMove');
+    };
+    if (e.repeat && (k === 'Escape' || k === 'Enter' || k === ' ')) return true;
+    if (k === 'Escape') this.toTitle();
+    else if (k === 'ArrowUp' || k === 'k') move(-1);
+    else if (k === 'ArrowDown' || k === 'j' || k === 'Tab') move(1);
+    else if (k === 'ArrowLeft' || k === 'h') stage(-1);
+    else if (k === 'ArrowRight' || k === 'l') stage(1);
+    else if (k === 'Enter' || k === ' ') {
+      if (item.id === 'practice') this.startPractice({ index: this.trainingStage, seed: RUN_SEED }, false);
+      else if (item.id === 'random') this.startPractice(randomBoard(), true);
+      else if (item.id === 'back') this.toTitle();
+    } else if (k === 'm' && !e.repeat) this.onMute();
+    return true;
+  }
+
+  /** Begin free practice on `board`. Score and the mistake tally start over. */
+  private startPractice(board: PracticeBoard, random: boolean): void {
+    sfx('menuConfirm');
+    this.kind = 'practice';
+    this.practiceRandom = random;
+    this.practiceHistory = [];
+    this.vim = new Vim();
+    this.scoreState = initialScore();
+    this.comboAlive = false;
+    this.strikes = 0;
+    this.mistakes = 0;
+    this.isNewBest = false;
+    this.clock.start(performance.now());
+    this.loadPracticeBoard(board);
+  }
+
+  /** Put a practice board up, fresh: no countdown, no limit, an empty undo history. */
+  private loadPracticeBoard(board: PracticeBoard): void {
+    const now = performance.now();
+    this.practiceBoard = board;
+    this.stageIndex = board.index;
+    this.field = loadStage(board.index, board.seed);
+    this.field.select = null;
+    this.vim.reset();
+    this.undo.clear();
+    this.vimKeys = [];
+    this.readout = '';
+    this.stageLimitMs = 0;
+    this.stageClock.reset();
+    this.goalCol = 0;
+    this.flashes = [];
+    this.clearedFlashMs = -Infinity;
+    this.phase = 'playing';
+    this.lastInputMs = now;
+    this.clock.resume(now); // stopped while a cleared board was up
+    setMusicScene({ kind: 'stage', stageIndex: board.index });
+    sfx('stageStart');
+  }
+
+  /** NEXT / PREVIOUS BOARD: the neighbouring stage, or another random board. */
+  private stepPracticeBoard(dir: 1 | -1): void {
+    if (!this.practiceRandom) {
+      this.loadPracticeBoard({ index: nextIndex(this.practiceBoard.index, dir), seed: RUN_SEED });
+      return;
+    }
+    if (dir === 1) {
+      this.practiceHistory.push(this.practiceBoard);
+      this.loadPracticeBoard(randomBoard());
+    } else {
+      const prev = this.practiceHistory.pop();
+      if (prev) this.loadPracticeBoard(prev);
+    }
+  }
+
+  /** Undo (u in Vim, ⌘Z in Standard): the board as it was before its last change. Practice only. */
+  private onUndo(): void {
+    if (this.kind !== 'practice' || this.phase !== 'playing') return;
+    this.markInput();
+    if (!this.undo.undo(this.field)) {
+      this.readout = 'UNDO -- NOTHING TO UNDO';
+      return;
+    }
+    this.vim.reset();
+    this.vimKeys = [];
+    this.goalCol = this.field.caret.col;
+    this.flashes = [];
+    this.readout = `UNDO -- ${this.undo.size} MORE`;
+    sfx('rowMove');
   }
 
   /** 1, 2, … on the start screen: pick a mode by its picker position. */
@@ -531,6 +739,10 @@ export class Game {
       this.openMenu();
       return;
     }
+    if (this.kind === 'practice' && this.phase === 'cleared') {
+      this.openTraining();
+      return;
+    }
     if (this.phase !== 'over' && this.phase !== 'won') return;
     this.toTitle();
   }
@@ -538,6 +750,10 @@ export class Game {
   /** Drop the run and show the start screen, where the mode can be changed. */
   private toTitle(): void {
     this.phase = 'start';
+    this.kind = 'run';
+    this.mistakes = 0;
+    this.readout = '';
+    this.undo.clear();
     sfx('menuMove');
     setMusicScene({ kind: 'title' });
     this.stageIndex = 0;
@@ -554,6 +770,7 @@ export class Game {
 
   /** Reset all run state to a fresh stage 1, then run the pre-stage countdown. */
   private beginRun(): void {
+    this.kind = 'run';
     this.stageIndex = 0;
     this.field = loadStage(0, RUN_SEED); // fixed seed → identical boards every run (KDA-59)
     this.vim = new Vim(); // no search / repeat memory carried over from the last run
@@ -658,7 +875,7 @@ export class Game {
   /** Alt+↑/↓: reorder rows. Pure layout — no blocks removed, so no score, mistake, or clear check. */
   private onMoveRow(dir: -1 | 1): void {
     if (this.phase !== 'playing') return;
-    if (moveRows(this.field, dir)) {
+    if (this.undo.record(this.field, () => moveRows(this.field, dir))) {
       this.goalCol = this.field.caret.col;
       this.markInput();
       sfx('rowMove');
@@ -694,10 +911,21 @@ export class Game {
         return false;
       }
     }
+    if (key === 'u' && this.kind === 'practice') {
+      // Practice undo (#43). Only on a bare Normal-mode `u`: after `d` / `i` / `a`
+      // it is still mini.ai's call object (`diu`), and a real run has no undo at all.
+      const st = this.vim.status();
+      if (st.mode === 'normal' && st.pending === '' && st.prompt === null && st.flash === null) {
+        this.onUndo();
+        return false;
+      }
+    }
     const size = this.fieldSize();
     const before = this.vimSnapshot();
-    const outcome = this.vim.key(this.field, key);
+    const outcome =
+      this.kind === 'practice' ? this.undo.record(this.field, () => this.vim.key(this.field, key)) : this.vim.key(this.field, key);
     this.markInput();
+    if (this.kind === 'practice') this.trackVimKeys(key, outcome.deleted);
     if (outcome.deleted) {
       this.applyDelete(outcome.deleted, size);
     } else {
@@ -709,9 +937,36 @@ export class Game {
     return outcome.repeatable;
   }
 
+  /**
+   * The readout's view of Vim: collect the keys of the command being typed; when
+   * one deletes, show them with what it took. A finished motion starts over.
+   */
+  private trackVimKeys(key: string, deleted: DeleteResult | null): void {
+    this.vimKeys.push(vimKeyLabel(key));
+    if (deleted) {
+      this.readout = `${this.vimKeys.join('')} -> ${describeDelete(deleted)}`;
+      this.vimKeys = [];
+      return;
+    }
+    const st = this.vim.status();
+    if (st.mode === 'normal' && st.pending === '' && st.prompt === null && st.flash === null) this.vimKeys = [];
+  }
+
   private onDelete(action: DeleteAction): void {
     if (this.phase !== 'playing') return;
+    if (this.kind === 'practice') {
+      const hadSelection = this.field.select !== null;
+      const size = this.fieldSize();
+      const result = this.undo.record(this.field, () => this.runDelete(action));
+      this.readout = `${standardKeys(action, hadSelection)} -> ${describeDelete(result)}`;
+      this.applyDelete(result, size);
+      return;
+    }
     const size = this.fieldSize();
+    this.applyDelete(this.runDelete(action), size);
+  }
+
+  private runDelete(action: DeleteAction): DeleteResult {
     let result: DeleteResult;
     switch (action) {
       case 'backward':
@@ -733,7 +988,7 @@ export class Game {
         result = deleteToLineEnd(this.field);
         break;
     }
-    this.applyDelete(result, size);
+    return result;
   }
 
   /**
@@ -834,6 +1089,11 @@ export class Game {
 
   /** A blue-touching delete = one strike; two strikes ends the run (spec §3). */
   private registerMistake(): void {
+    if (this.kind === 'practice') {
+      this.mistakes++; // counted, never fatal (#43)
+      this.strikeFlashMs = performance.now();
+      return;
+    }
     this.strikes++;
     this.strikeFlashMs = performance.now(); // red flash
     if (this.strikes >= MAX_STRIKES) this.endRun('strikes');
@@ -898,13 +1158,16 @@ export class Game {
     // Per-stage countdown (KDA-59): frozen once the run ends, paused during
     // cleared/countdown. Hitting zero while playing ends the run like a strike.
     this.stageRemainingMs = Math.max(0, this.stageLimitMs - this.stageClock.elapsed(now));
-    if (this.phase === 'playing' && this.stageRemainingMs <= 0) this.endRun('timeout');
+    const timed = this.kind === 'run'; // practice has no stage limit (#43)
+    if (timed && this.phase === 'playing' && this.stageRemainingMs <= 0) this.endRun('timeout');
 
     if (this.phase === 'playing' && this.overlay === 'none') {
       // Low time (#14): one warning per second over the stage's last five seconds.
-      const left = secondsLeft(this.stageRemainingMs);
-      if (lowTimeTick(this.warnSeconds, left)) sfx('timeWarning');
-      this.warnSeconds = left;
+      if (timed) {
+        const left = secondsLeft(this.stageRemainingMs);
+        if (lowTimeTick(this.warnSeconds, left)) sfx('timeWarning');
+        this.warnSeconds = left;
+      }
 
       // A combo that lapses is heard when it lapses, not at the next delete.
       if (
@@ -926,7 +1189,15 @@ export class Game {
       vim:
         this.mode === 'vim' ? { ...this.vim.status(), spans: this.vim.selection(this.field) } : null,
       helpOpen: this.helpOpen,
-      menu: this.overlay === 'menu' ? { items: this.menuItems(), index: this.menuIndex, paused: this.phase === 'playing' } : null,
+      menu: this.overlay === 'menu' ? this.menuView() : this.phase === 'training' ? this.trainingView() : null,
+      practice:
+        this.kind === 'practice'
+          ? {
+              mistakes: this.mistakes,
+              readout: this.readout,
+              board: this.practiceRandom ? `RANDOM ${String(this.practiceBoard.index + 1).padStart(2, '0')}` : null,
+            }
+          : null,
       overReason: this.overReason,
       best: this.best.score,
       isNewBest: this.isNewBest,

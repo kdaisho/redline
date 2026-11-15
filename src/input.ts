@@ -33,6 +33,8 @@ export interface FieldActions {
   delete(action: DeleteAction): void;
   /** Move the caret's row (or selected rows) up (-1) / down (+1). */
   moveRow(dir: -1 | 1): void;
+  /** ⌘Z: undo the last change to the board — free practice only (#43); a real run ignores it. */
+  undo(): void;
 }
 
 /** What a key does in the active mode. */
@@ -78,6 +80,10 @@ export interface InputHandlers {
   cycleMode(): void;
   /** S on a screen: open the soundtrack page (#31). The game decides which screens allow it. */
   soundtrack?(): void;
+  /** T on a screen: open training (#43). The game decides which screens allow it. */
+  training?(): void;
+  /** R on a screen: retry the board just cleared in practice (#43). */
+  retry?(): void;
   /**
    * Whether gameplay input is currently accepted. False during the countdown,
    * stage-clear, start, and game-over screens — gating here (not just in the
@@ -157,6 +163,14 @@ export function attachInput(handlers: InputHandlers, target: Window = window): (
     }
     if ((e.key === 's' || e.key === 'S') && !e.metaKey && !e.ctrlKey && !e.altKey) {
       if (!e.repeat) handlers.soundtrack?.();
+      return true;
+    }
+    if ((e.key === 't' || e.key === 'T') && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (!e.repeat) handlers.training?.();
+      return true;
+    }
+    if ((e.key === 'r' || e.key === 'R') && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (!e.repeat) handlers.retry?.();
       return true;
     }
     if (/^[1-9]$/.test(e.key) && !e.metaKey && !e.ctrlKey && !e.altKey) {
