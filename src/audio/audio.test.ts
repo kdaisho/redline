@@ -107,6 +107,22 @@ describe('bgm compile', () => {
     });
   }
 
+  it('can start a track part-way through (#37 seek)', () => {
+    const t = trackById('green-diff');
+    const c = compile(t);
+    const stub = new StubContext(2);
+    const engine = createBgmEngine(stub.asContext(), stub.node());
+    const from = c.steps + 5 * STEPS + 3; // second pass, bar 6, step 3
+    engine.play(t, { from });
+    stub.currentTime += 0.06; // START_LEAD: the first note is due now
+    const pos = engine.position()!;
+    expect(pos.loop).toBe(1);
+    expect(pos.bar).toBe(5);
+    expect(pos.step).toBe(5 * STEPS + 3);
+    expect(stub.problems).toEqual([]); // nothing scheduled in the past
+    engine.stop();
+  });
+
   it('compiling is pure and repeatable', () => {
     const t = trackById('redline');
     expect(compile(t)).toEqual(compile(t));
