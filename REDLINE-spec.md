@@ -470,3 +470,12 @@ Juice & meta
 12. Delete feedback animations (snap/flash), combo pulse, strike flash, caret blink
 13. Visual theme pass (terminal palette, contrast)
 14. Game-over + start screens, restart, best-score in localStorage
+
+## Soundtrack page (#31)
+
+`soundtrack.html` is a music-player view of the eight BGM tracks: a library, a themed
+view per track (its own palette and code-drawn cover art, a live meter, the bar-by-bar
+chord structure) and a player bar. It plays the game's own track data through the game's
+own music engine, so it always matches the game. A track counts as two passes of its
+loop, then the next one starts unless Repeat is on. `S` on the title screen opens it;
+`Esc` there returns to the game.

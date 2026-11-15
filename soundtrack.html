@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>REDLINE — Soundtrack</title>
+  </head>
+  <body>
+    <div class="app" id="app">
+      <aside class="side">
+        <a class="brand" href="./" title="Back to the game">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span class="brand-name">REDLINE</span>
+        </a>
+        <nav class="side-nav">
+          <a href="./" class="side-link">‹ Back to game</a>
+        </nav>
+        <h2 class="side-title">Original soundtrack</h2>
+        <ol class="library" id="library"></ol>
+        <p class="side-note">Eight tracks, synthesised live in your browser. No audio files.</p>
+      </aside>
+
+      <main class="main" id="main">
+        <div class="wash" aria-hidden="true"></div>
+        <section class="hero">
+          <div class="cover cover-lg" id="hero-cover"></div>
+          <div class="hero-text">
+            <p class="eyebrow" id="hero-use"></p>
+            <h1 id="hero-name"></h1>
+            <p class="feel" id="hero-feel"></p>
+            <p class="facts" id="hero-facts"></p>
+          </div>
+        </section>
+
+        <section class="actions">
+          <button class="play-big" id="hero-play" type="button" aria-label="Play"></button>
+          <button class="chip" id="repeat-chip" type="button" aria-pressed="false">Repeat this track</button>
+          <span class="actions-hint" id="hint">Space plays · ←/→ changes track · ↑/↓ volume</span>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Live</h2>
+            <span class="panel-side" id="live-chord"></span>
+          </div>
+          <canvas id="scope" class="scope" height="140"></canvas>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Structure</h2>
+            <span class="panel-side" id="structure-side"></span>
+          </div>
+          <div class="bars" id="bars"></div>
+        </section>
+      </main>
+
+      <footer class="player">
+        <div class="p-now">
+          <div class="cover cover-sm" id="p-cover"></div>
+          <div class="p-now-text">
+            <div class="p-name" id="p-name"></div>
+            <div class="p-use" id="p-use"></div>
+          </div>
+        </div>
+        <div class="p-center">
+          <div class="p-buttons">
+            <button id="prev" type="button" class="icon" aria-label="Previous track"></button>
+            <button id="toggle" type="button" class="icon play" aria-label="Play"></button>
+            <button id="next" type="button" class="icon" aria-label="Next track"></button>
+            <button id="repeat" type="button" class="icon small" aria-label="Repeat this track" aria-pressed="false"></button>
+          </div>
+          <div class="p-progress">
+            <span id="t-now">0:00</span>
+            <div class="track-bar" id="bar" role="progressbar" aria-label="Position in the track" aria-valuemin="0" aria-valuemax="100"><div id="bar-fill"></div></div>
+            <span id="t-total">0:00</span>
+          </div>
+        </div>
+        <label class="p-vol">
+          <span class="vol-icon" aria-hidden="true"></span>
+          <input id="vol" type="range" min="0" max="100" step="1" value="70" aria-label="Volume" />
+        </label>
+      </footer>
+    </div>
+    <script type="module" src="/src/soundtrack.ts"></script>
+  </body>
+</html>

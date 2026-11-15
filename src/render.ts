@@ -1045,6 +1045,7 @@ function drawStartScreen(ctx: Ctx, width: number, height: number, best: number, 
   if (best > 0) text(ctx, `${modeInfo(mode).label.toUpperCase()} BEST  ${thousands(best)}`, cx, y, C.dim, F_SM, 'center');
   y += 58;
   prompt(ctx, 'PRESS ENTER TO START', cx, y, nowMs);
+  text(ctx, 'S FOR SOUNDTRACK', cx, y + 44, C.dim, F_SM, 'center');
 }
 
 /**
