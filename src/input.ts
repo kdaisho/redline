@@ -61,8 +61,17 @@ export interface InputHandlers {
   volume?(bus: 'music' | 'sfx', delta: -1 | 1): void;
   /** Shift + a volume key — mute / un-mute that bus only. */
   busMute?(bus: 'music' | 'sfx'): void;
-  /** Escape — back to the start screen from an end screen. */
+  /**
+   * Escape — the game's menu key (#33): opens the pause menu while playing (in a
+   * mode whose keymap does not claim Esc) or on the start screen, and goes back
+   * to the start screen from an end screen.
+   */
   menu(): void;
+  /**
+   * A menu is open: it gets every key first (function keys aside). Return true
+   * when the key was the menu's, which also swallows it.
+   */
+  overlayKey?(e: KeyboardEvent): boolean;
   /** A digit key on a screen: pick the mode at this 0-based picker index. */
   pickMode(index: number): void;
   /** Tab on a screen: step to the next mode. */
@@ -136,11 +145,11 @@ export function attachInput(handlers: InputHandlers, target: Window = window): (
       if (!e.repeat) handlers.mute();
       return true;
     }
-    if (active) return false; // the keys below only mean something on a screen
     if (e.key === 'Escape') {
       if (!e.repeat) handlers.menu();
       return true;
     }
+    if (active) return false; // the keys below only mean something on a screen
     if (e.key === 'Tab' && !e.metaKey && !e.ctrlKey && !e.altKey) {
       e.preventDefault(); // keep focus on the game
       if (!e.repeat) handlers.cycleMode();
@@ -174,6 +183,12 @@ export function attachInput(handlers: InputHandlers, target: Window = window): (
       if (e.shiftKey) {
         if (!e.repeat) handlers.busMute?.(vol[0]);
       } else handlers.volume?.(vol[0], vol[1]);
+      return;
+    }
+
+    if (handlers.overlayKey?.(e)) {
+      e.preventDefault();
+      repeater.stop();
       return;
     }
 

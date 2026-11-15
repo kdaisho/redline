@@ -1,4 +1,4 @@
-import { render, type Scene, type Flash } from './render.ts';
+import { render, type Scene, type Flash, type MenuItem } from './render.ts';
 import {
   type FieldState,
   type MoveAction,
@@ -29,6 +29,8 @@ import {
   adjustVolume,
   toggleBusMute,
   audioLabel,
+  audioSettings,
+  MAX_VOLUME,
   setMusicScene,
   sfx,
   playCues,
@@ -259,7 +261,13 @@ export class Game {
   private vim = new Vim(); // Vim mode's modal state (#7); fresh per run, reset per stage
 
   // ── help screen (F1): covers the board and stops the clocks while open ──
-  private helpOpen = false;
+  private overlay: 'none' | 'menu' | 'help' = 'none';
+  private get helpOpen(): boolean {
+    return this.overlay === 'help';
+  }
+  // ── pause menu (Esc, #33): help, volumes, mute, quit — no function keys needed ──
+  private menuIndex = 0;
+  private helpFromMenu = false; // closing help returns to the menu it was opened from
 
   // ── pre-stage countdown (KDA-49) ──
   private countdownStartMs = 0; // performance.now() when the countdown began
@@ -307,13 +315,14 @@ export class Game {
       },
       help: () => this.onHelp(),
       menu: () => this.onMenu(),
+      overlayKey: (e) => this.onOverlayKey(e),
       pickMode: (i) => this.onPickMode(i),
       cycleMode: () => this.onCycleMode(),
       soundtrack: () => {
         // only from the title screen — never mid-run or on a result screen
-        if (this.phase === 'start' && !this.helpOpen) window.location.assign('soundtrack.html');
+        if (this.phase === 'start' && this.overlay === 'none') window.location.assign('soundtrack.html');
       },
-      isActive: () => this.phase === 'playing' && !this.helpOpen,
+      isActive: () => this.phase === 'playing' && this.overlay === 'none',
     });
     this.best = loadBest(this.mode);
     this.muted = isMuted();
@@ -360,24 +369,119 @@ export class Game {
       return;
     }
     if (this.phase !== 'start' && this.phase !== 'playing') return;
-    this.helpOpen = true;
+    this.helpFromMenu = this.overlay === 'menu';
+    this.setOverlay('help');
     sfx('menuMove');
-    if (this.phase === 'playing') {
-      const now = performance.now();
-      this.clock.pause(now);
-      this.stageClock.pause(now);
-    }
   }
 
   private closeHelp(): void {
     if (!this.helpOpen) return;
-    this.helpOpen = false;
+    this.setOverlay(this.helpFromMenu ? 'menu' : 'none');
+    this.helpFromMenu = false;
     sfx('menuMove');
-    if (this.phase === 'playing') {
-      const now = performance.now();
+  }
+
+  /**
+   * Show / hide the help screen or the pause menu. Mid-stage either one is a
+   * pause: both clocks stop and the board is hidden, so it cannot be used to
+   * study the field for free.
+   */
+  private setOverlay(next: 'none' | 'menu' | 'help'): void {
+    const was = this.overlay;
+    if (was === next) return;
+    this.overlay = next;
+    if (this.phase !== 'playing') return;
+    const now = performance.now();
+    if (was === 'none') {
+      this.clock.pause(now);
+      this.stageClock.pause(now);
+    } else if (next === 'none') {
       this.clock.resume(now);
       this.stageClock.resume(now);
       this.lastInputMs = now;
+    }
+  }
+
+  // ── pause menu (#33) ──
+  private menuItems(): MenuItem[] {
+    const s = audioSettings();
+    const level = (bus: 'music' | 'sfx'): string => (s[bus].muted ? 'OFF' : `${s[bus].volume} / ${MAX_VOLUME}`);
+    const playing = this.phase === 'playing';
+    return [
+      { id: 'resume', label: playing ? 'RESUME' : 'CLOSE' },
+      { id: 'help', label: 'KEYS' },
+      { id: 'music', label: 'MUSIC', value: level('music'), adjustable: true },
+      { id: 'sfx', label: 'EFFECTS', value: level('sfx'), adjustable: true },
+      { id: 'mute', label: 'SOUND', value: this.muted ? 'OFF' : 'ON' },
+      playing ? { id: 'quit', label: 'QUIT TO TITLE' } : { id: 'soundtrack', label: 'SOUNDTRACK' },
+    ];
+  }
+
+  private openMenu(): void {
+    if (this.overlay !== 'none') return;
+    if (this.phase !== 'playing' && this.phase !== 'start') return;
+    this.menuIndex = 0;
+    this.setOverlay('menu');
+    sfx('menuMove');
+  }
+
+  private closeMenu(): void {
+    if (this.overlay !== 'menu') return;
+    this.setOverlay('none');
+    sfx('menuMove');
+  }
+
+  /** Keys while the pause menu is up. Every key is the menu's, so nothing leaks to the board. */
+  private onOverlayKey(e: KeyboardEvent): boolean {
+    if (this.overlay !== 'menu') return false;
+    if (e.metaKey || e.ctrlKey) return false; // leave browser shortcuts alone
+    const items = this.menuItems();
+    const item = items[this.menuIndex];
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    const move = (d: number): void => {
+      this.menuIndex = (this.menuIndex + d + items.length) % items.length;
+      sfx('menuMove');
+    };
+    const adjust = (d: -1 | 1): void => {
+      if (item.id === 'music' || item.id === 'sfx') {
+        adjustVolume(item.id, d); // plays its own tick at the new level
+        this.soundText = audioLabel();
+      } else if (item.id === 'mute') this.onMute();
+    };
+    if (k === 'Escape') {
+      if (!e.repeat) this.closeMenu();
+    } else if (k === 'ArrowUp' || k === 'k') move(-1);
+    else if (k === 'ArrowDown' || k === 'j' || k === 'Tab') move(1);
+    else if (k === 'ArrowLeft' || k === 'h') adjust(-1);
+    else if (k === 'ArrowRight' || k === 'l') adjust(1);
+    else if ((k === 'Enter' || k === ' ') && !e.repeat) this.activateMenuItem(item);
+    else if (k === 'm' && !e.repeat) this.onMute();
+    return true;
+  }
+
+  private activateMenuItem(item: MenuItem): void {
+    switch (item.id) {
+      case 'resume':
+        this.closeMenu();
+        break;
+      case 'help':
+        this.onHelp();
+        break;
+      case 'music':
+      case 'sfx':
+        toggleBusMute(item.id);
+        this.soundText = audioLabel();
+        break;
+      case 'mute':
+        this.onMute();
+        break;
+      case 'quit':
+        this.setOverlay('none');
+        this.toTitle();
+        break;
+      case 'soundtrack':
+        window.location.assign('soundtrack.html');
+        break;
     }
   }
 
@@ -396,7 +500,7 @@ export class Game {
 
   /** Switch mode (start screen only — a run is played in one mode) and remember it. */
   private setMode(mode: Mode): void {
-    if (this.phase !== 'start' || this.helpOpen || mode === this.mode) return;
+    if (this.phase !== 'start' || this.overlay !== 'none' || mode === this.mode) return;
     if (!MODES.find((m) => m.id === mode)?.available) return;
     this.mode = mode;
     sfx('menuMove');
@@ -404,13 +508,25 @@ export class Game {
     this.best = loadBest(mode); // each mode has its own best
   }
 
-  /** Escape on an end screen: back to the start screen, where the mode can be changed. */
+  /**
+   * Escape: close the help screen; open the pause menu mid-stage or on the start
+   * screen; go back to the start screen from an end screen.
+   */
   private onMenu(): void {
     if (this.helpOpen) {
       this.closeHelp(); // Esc also closes the help screen
       return;
     }
+    if (this.phase === 'playing' || this.phase === 'start') {
+      this.openMenu();
+      return;
+    }
     if (this.phase !== 'over' && this.phase !== 'won') return;
+    this.toTitle();
+  }
+
+  /** Drop the run and show the start screen, where the mode can be changed. */
+  private toTitle(): void {
     this.phase = 'start';
     sfx('menuMove');
     setMusicScene({ kind: 'title' });
@@ -559,6 +675,15 @@ export class Game {
    */
   private onVimKey(key: string): boolean {
     if (this.phase !== 'playing') return false;
+    if (key === '<Esc>') {
+      // Esc first belongs to Vim: it cancels a half-typed command, a selection, a
+      // search or a flash jump. With nothing to cancel it opens the pause menu (#33).
+      const st = this.vim.status();
+      if (st.mode === 'normal' && st.pending === '' && !st.operator && st.prompt === null && st.flash === null) {
+        this.openMenu();
+        return false;
+      }
+    }
     const size = this.fieldSize();
     const before = this.vimSnapshot();
     const outcome = this.vim.key(this.field, key);
@@ -761,7 +886,7 @@ export class Game {
     this.stageRemainingMs = Math.max(0, this.stageLimitMs - this.stageClock.elapsed(now));
     if (this.phase === 'playing' && this.stageRemainingMs <= 0) this.endRun('timeout');
 
-    if (this.phase === 'playing' && !this.helpOpen) {
+    if (this.phase === 'playing' && this.overlay === 'none') {
       // Low time (#14): one warning per second over the stage's last five seconds.
       const left = secondsLeft(this.stageRemainingMs);
       if (lowTimeTick(this.warnSeconds, left)) sfx('timeWarning');
@@ -787,6 +912,7 @@ export class Game {
       vim:
         this.mode === 'vim' ? { ...this.vim.status(), spans: this.vim.selection(this.field) } : null,
       helpOpen: this.helpOpen,
+      menu: this.overlay === 'menu' ? { items: this.menuItems(), index: this.menuIndex, paused: this.phase === 'playing' } : null,
       overReason: this.overReason,
       best: this.best.score,
       isNewBest: this.isNewBest,

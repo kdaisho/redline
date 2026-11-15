@@ -33,11 +33,10 @@ const GAME_KEYS: HelpSection = {
   title: 'GAME',
   rows: [
     ['Enter', 'start · next stage · restart'],
-    ['F1', 'this help (pauses the clock, hides the board)'],
-    ['F2', 'mute / unmute everything'],
-    ['F3 F4 · F6 F7', 'volume down / up: music · sound effects'],
-    ['⇧F3 · ⇧F6', 'music off / on · sound effects off / on'],
-    ['Esc', 'end screen: back to the menu (change mode)'],
+    ['Esc', 'menu: keys, volume, mute, quit (pauses)'],
+    ['Esc', 'end screen: back to the start screen'],
+    ['F1 · F2', 'also: this help · mute / unmute everything'],
+    ['F3 F4 · F6 F7', 'also: volume - / +, music · effects'],
     ['1  2  Tab', 'start screen: pick the mode'],
   ],
 };
@@ -71,7 +70,7 @@ const STANDARD_HELP: HelpSection[] = [
   },
   {
     title: 'GAME',
-    rows: [...GAME_KEYS.rows, ['M', 'mute / unmute (same as F2)'], ['Space', 'same as Enter']],
+    rows: [...GAME_KEYS.rows, ['M', 'mute / unmute'], ['Space', 'same as Enter']],
   },
 ];
 
@@ -165,7 +164,8 @@ const VIM_HELP: HelpSection[] = [
     title: 'GAME',
     rows: [
       ...GAME_KEYS.rows,
-      ['M  Enter  Space', 'belong to Vim while playing — mute is F2'],
+      ['M  Enter  Space', 'belong to Vim while playing'],
+      ['Esc', 'cancels a command first, then opens the menu'],
     ],
   },
   {
@@ -190,7 +190,7 @@ export const MODES: readonly ModeInfo[] = [
     startHelp: [
       'move  ← →   ·  word  ⌥← ⌥→   ·  line  ⌘← ⌘→   ·  ↑ ↓',
       'delete left  ⌫  ⌥⌫  ⌘⌫     ·     delete right  ⌦  ⌥⌦  ⌘⌦',
-      'select  ⇧ + move    ·    move row  ⌥↑ ⌥↓    ·    mute  M    ·    all keys  F1',
+      'select  ⇧ + move    ·    move row  ⌥↑ ⌥↓    ·    mute  M    ·    menu + all keys  Esc',
     ],
     help: STANDARD_HELP,
   },
@@ -201,7 +201,7 @@ export const MODES: readonly ModeInfo[] = [
     startHelp: [
       'move  h j k l  ·  w b e  ·  0 ^ $  ·  gg G  ·  f t ; ,  ·  %  ·  / n *  ·  s flash',
       'delete  x  ·  dw  diw  di(  dia  ·  dd  D  ·  counts  3x  d2w  ·  repeat  .',
-      'select  v  V  Ctrl-v  then  d    ·    no insert, no undo    ·    mute  F2    ·    all keys  F1',
+      'select  v  V  Ctrl-v  then  d    ·    no insert, no undo    ·    menu + all keys  Esc',
     ],
     help: VIM_HELP,
   },
