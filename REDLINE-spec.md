@@ -290,7 +290,8 @@ scores as the command that runs at the target (`dr…iw` word, `dr…d` line).
 - **Per-stage time limit.** Each stage has a budget; running out ends the run. The
   budget is a competent player's estimated clear time for *that board* (time to read
   each row, plus a cost per delete action by the chord it needs, plus a little per
-  trap) × a slack factor that tightens linearly from 1.7 (stage 1) to 1.05 (stage 50).
+  trap) × a slack factor that tightens linearly from 3.0 (stage 1) to 1.4 (stage 50),
+  and never less than 15 seconds.
 - `node scripts/measure-stages.ts` prints the measured curve (delete actions, characters
   per action, tiny-run share, traps, budget per action) for stages 1–50; `--check`
   fails if a balance target or a board invariant is missed. The play model is

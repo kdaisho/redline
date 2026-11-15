@@ -148,9 +148,10 @@ export function loadStage(index: number, runSeed = 0): FieldState {
  * ASSUMPTIONS (not play-tested — tune here):
  *   - "competent" = knows the chords: ~1 s to move to a target and fire a
  *     simple chord, ~0.25 s to read a row;
- *   - at slack 1.0 that player clears a board with nothing to spare, so the
- *     curve stops a little above it (`SLACK_LATE`); an expert, at roughly
- *     0.6–0.7 × these costs, keeps a real margin even on the last stage.
+ *   - at slack 1.0 that player clears a board with nothing to spare. The first
+ *     playable build (slack 1.7 → 1.05, no floor) gave stage 1 only 6.6 s and
+ *     ended runs on the clock almost at once (#25), so the curve now runs
+ *     3.0 → 1.4 with a floor of `BUDGET_FLOOR_S`.
  */
 const BUDGET_SETUP_S = 1.5; // orienting on a fresh board
 const BUDGET_PER_ROW_S = 0.25; // reading a row for blue
@@ -163,8 +164,9 @@ const ACT_SPAN_S = 1.1; // word-wise selection mid-row…
 const ACT_SPAN_WORD_S = 0.12; // …per word (capped)
 const ACT_PRECISE_S = 1.4; // selection placed by character…
 const ACT_PRECISE_STEP_S = 0.1; // …per single-character step (capped)
-const SLACK_EARLY = 1.7; // stage 1: roomy
-const SLACK_LATE = 1.05; // stage 50: a competent player just makes it
+const SLACK_EARLY = 3.0; // stage 1: roomy — a newcomer is still finding the keys
+const SLACK_LATE = 1.4; // stage 50: tight, but a competent player keeps a margin
+const BUDGET_FLOOR_S = 15; // no stage is shorter than this, however small the board (#25)
 
 function actionSeconds(a: DeleteAction): number {
   const words = Math.min(a.words, 8) * ACT_SPAN_WORD_S;
@@ -199,7 +201,7 @@ export function stageBudgetMs(lines: Line[], stageIndex: number = STAGE_OF.get(l
     m.rows * BUDGET_PER_ROW_S +
     m.traps.total * BUDGET_PER_TRAP_S +
     m.actions.reduce((s, a) => s + actionSeconds(a), 0);
-  return Math.round(estSeconds * stageSlack(stageIndex) * 1000);
+  return Math.round(Math.max(BUDGET_FLOOR_S, estSeconds * stageSlack(stageIndex)) * 1000);
 }
 
 // ── generation ───────────────────────────────────────────────────────────
