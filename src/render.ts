@@ -137,7 +137,7 @@ export interface HudModel {
   stageRemainingMs: number; // time left on the current stage's countdown
 }
 
-export type Phase = 'start' | 'countdown' | 'playing' | 'cleared' | 'over' | 'won';
+export type Phase = 'start' | 'training' | 'countdown' | 'playing' | 'cleared' | 'over' | 'won';
 
 export interface Scene {
   field: FieldState;
@@ -147,28 +147,45 @@ export interface Scene {
   mode: Mode; // active control mode (#8) → HUD label, start-screen picker + key help
   vim: VimView | null; // Vim mode's statusline + Visual selection (#7); null in other modes
   helpOpen: boolean; // the help screen is up (covers everything but the HUD)
-  menu: MenuView | null; // the pause menu (Esc, #33) is up — also covers the board
+  menu: MenuView | null; // the pause menu (Esc, #33) or the training picker (#43) — covers the board
+  practice: PracticeView | null; // free practice (#43): no limit, a mistake tally, the readout
   overReason: 'strikes' | 'timeout'; // why the run ended → game-over subtitle (KDA-59)
   best: number; // best score ever (localStorage), shown on start/over screens
   isNewBest: boolean; // this run beat the stored best
   countdownNum: number; // 3→2→1, shown while phase === 'countdown' (KDA-49)
 }
 
-/** One row of the pause menu (#33). */
+/** One row of the pause menu (#33) or the training picker (#43). */
 export interface MenuItem {
-  id: 'resume' | 'help' | 'music' | 'sfx' | 'mute' | 'quit' | 'soundtrack';
+  id:
+    | 'resume' | 'help' | 'music' | 'sfx' | 'mute' | 'quit' | 'soundtrack'
+    | 'training' | 'reset' | 'next' | 'prev' // practice / title menu
+    | 'practice' | 'random' | 'lessons' | 'back'; // training picker
   label: string;
   /** Current setting, shown right of the label. */
   value?: string;
   /** ← / → change the value. */
   adjustable?: boolean;
+  /** Shown dim and skipped by ↑ / ↓. */
+  disabled?: boolean;
 }
 
 export interface MenuView {
   items: MenuItem[];
   index: number;
-  /** Opened mid-stage (the clock is stopped) rather than on the start screen. */
-  paused: boolean;
+  title: string;
+  subtitle: string;
+  /** The key hint under the rows; the menu's own when absent. */
+  hint?: string;
+}
+
+/** Free practice (#43): what replaces the run's stakes in the HUD. */
+export interface PracticeView {
+  mistakes: number;
+  /** The last command and what it did (`d2w -> 14 RED · WORD X1.5`), or ''. */
+  readout: string;
+  /** `RANDOM 23` on a generated random board; null on a stage's own board. */
+  board: string | null;
 }
 
 /** What Vim mode adds to the picture: the statusline and the Visual selection. */
@@ -688,7 +705,7 @@ export function render(ctx: Ctx, width: number, height: number, scene: Scene, no
   const phase = scene.phase;
   const strikeAge = nowMs - scene.fx.strikeFlashMs;
 
-  drawHud(ctx, width, scene.hud, scene.fx, scene.mode, nowMs);
+  drawHud(ctx, width, scene.hud, scene.fx, scene.mode, nowMs, scene.practice);
   rect(ctx, PAD, RULE_TOP, width - PAD * 2, 1, C.dim);
   rect(ctx, PAD, height - FOOT_H, width - PAD * 2, 1, C.dim);
 
@@ -731,7 +748,7 @@ export function render(ctx: Ctx, width: number, height: number, scene: Scene, no
  * left; mode, sound, strikes and the run clock on the right. Row 2: the stage
  * limit and its gauge of blocks, which empties and reddens as time runs out.
  */
-function drawHud(ctx: Ctx, width: number, hud: HudModel, fx: Fx, mode: Mode, nowMs: number): void {
+function drawHud(ctx: Ctx, width: number, hud: HudModel, fx: Fx, mode: Mode, nowMs: number, practice: PracticeView | null): void {
   const GAP = 28; // between readouts
   const KV = 10; // between a label and its value
   const y = HUD_Y1;
@@ -742,7 +759,9 @@ function drawHud(ctx: Ctx, width: number, hud: HudModel, fx: Fx, mode: Mode, now
     x += gtext(ctx, value, x, y, s) + GAP;
   };
   x += gtext(ctx, 'REDLINE', x, y, S_HUD) + GAP;
-  kv('STAGE', pad2(hud.stage));
+  if (practice) x += gtext(ctx, 'PRACTICE', x, y, S_HUD_WHITE) + GAP;
+  if (practice?.board) kv('BOARD', practice.board);
+  else kv('STAGE', pad2(hud.stage));
   kv('SCORE', String(hud.score).padStart(6, '0'));
   if (delta) {
     const p = (nowMs - delta.startMs) / DELTA_MS;
@@ -760,18 +779,34 @@ function drawHud(ctx: Ctx, width: number, hud: HudModel, fx: Fx, mode: Mode, now
   // right group, laid out from the edge inwards
   let rx = width - PAD;
   rx -= gtext(ctx, `T+${formatTime(hud.timeMs)}`, rx, y, S_HUD, 'right') + GAP;
-  for (let i = hud.maxStrikes - 1; i >= 0; i--) {
-    const used = i < hud.strikes;
-    rx -= gtext(ctx, used ? '[X]' : '[ ]', rx, y, used ? S_HUD_RED : S_HUD, 'right');
+  if (practice) {
+    // practice counts mistakes instead of spending strikes
+    rx -= gtext(ctx, pad2(practice.mistakes), rx, y, practice.mistakes > 0 ? S_HUD_RED : S_HUD, 'right') + KV;
+    rx -= gtext(ctx, 'MISTAKES', rx, y, S_HUD_DIM, 'right') + GAP;
+  } else {
+    for (let i = hud.maxStrikes - 1; i >= 0; i--) {
+      const used = i < hud.strikes;
+      rx -= gtext(ctx, used ? '[X]' : '[ ]', rx, y, used ? S_HUD_RED : S_HUD, 'right');
+    }
+    rx -= KV;
+    rx -= gtext(ctx, 'STRIKES', rx, y, S_HUD_DIM, 'right') + GAP;
   }
-  rx -= KV;
-  rx -= gtext(ctx, 'STRIKES', rx, y, S_HUD_DIM, 'right') + GAP;
   rx -= gtext(ctx, hud.muted ? 'SND OFF' : hud.soundText ? `SND ${hud.soundText.replace(/^♪\s*/, '')}` : 'SND ON', rx, y, hud.muted ? S_HUD_DIM : S_HUD, 'right') + GAP;
   rx -= gtext(ctx, modeInfo(mode).label.toUpperCase(), rx, y, S_HUD, 'right') + KV;
   gtext(ctx, 'MODE', rx, y, S_HUD_DIM, 'right');
 
-  // row 2: LIMIT m:ss + gauge (KDA-59). Before a run there is no budget: all dots.
+  // row 2 in practice: no limit, so the readout of the last command takes it (#43)
   const y2 = HUD_Y2;
+  if (practice) {
+    const lx = PAD + gtext(ctx, 'LAST', PAD, y2, S_HUD_DIM) + KV;
+    if (practice.readout) {
+      const bad = practice.readout.includes('MISTAKE');
+      text(ctx, practice.readout, lx, y2, bad ? C.red : C.amber, F_HUD, 'left', C.amber, 7);
+    } else text(ctx, 'NO LIMIT -- DELETE SOMETHING, THEN UNDO IT', lx, y2, C.dim, F_HUD);
+    return;
+  }
+
+  // row 2: LIMIT m:ss + gauge (KDA-59). Before a run there is no budget: all dots.
   const live = hud.stageLimitMs > 0;
   const ratio = live ? clamp01(hud.stageRemainingMs / hud.stageLimitMs) : 0;
   const gaugeColor = lerpHex(C.amber, C.red, 1 - ratio * 2); // calm → alarm over the last half
@@ -806,7 +841,9 @@ function drawFootline(ctx: Ctx, width: number, height: number, scene: Scene, str
   if (strikeAge >= 0 && strikeAge < STRIKE_BANNER_MS) {
     if (Math.floor(strikeAge / 150) % 2 === 0) {
       rect(ctx, PAD, y - 19, width - PAD * 2, 38, C.red);
-      const msg = `!! STRIKE ${scene.hud.strikes}/${scene.hud.maxStrikes} -- BLUE IS KEEP !!`;
+      const msg = scene.practice
+        ? `!! MISTAKE -- BLUE IS KEEP -- ${scene.mode === 'vim' ? 'U' : 'CMD-Z'} UNDOES IT !!`
+        : `!! STRIKE ${scene.hud.strikes}/${scene.hud.maxStrikes} -- BLUE IS KEEP !!`;
       text(ctx, msg, width / 2, y, C.bg, F_HUD, 'center');
       return;
     }
@@ -842,7 +879,7 @@ function drawFootline(ctx: Ctx, width: number, height: number, scene: Scene, str
     gtext(ctx, `SELECT ${pad2(Math.max(0, n))}`, x, y, S_HUD);
   } else gtext(ctx, 'READY.', x, y, S_HUD);
 
-  text(ctx, 'ESC MENU', width / 2, y, C.dim, F_SM, 'center');
+  text(ctx, scene.practice ? `${scene.mode === 'vim' ? 'U' : '⌘Z'} UNDO   ·   ESC MENU` : 'ESC MENU', width / 2, y, C.dim, F_SM, 'center');
   if (field.lines.length > 0)
     gtext(ctx, `L${pad2(field.caret.line + 1)} C${pad2(field.caret.col + 1)}`, width - PAD, y, S_HUD_DIM, 'right');
 }
@@ -1064,7 +1101,7 @@ function drawStartScreen(ctx: Ctx, width: number, height: number, best: number, 
   if (best > 0) text(ctx, `${modeInfo(mode).label.toUpperCase()} BEST  ${thousands(best)}`, cx, y, C.dim, F_SM, 'center');
   y += 58;
   prompt(ctx, 'PRESS ENTER TO START', cx, y, nowMs);
-  text(ctx, 'ESC FOR OPTIONS   ·   S FOR SOUNDTRACK', cx, y + 44, C.dim, F_SM, 'center');
+  text(ctx, 'ESC FOR OPTIONS   ·   T FOR TRAINING   ·   S FOR SOUNDTRACK', cx, y + 44, C.dim, F_SM, 'center');
 }
 
 /**
@@ -1100,6 +1137,15 @@ function drawStageCleared(ctx: Ctx, width: number, height: number, scene: Scene,
 
   // the banner snaps up to size for a little pop
   const grow = clamp01((nowMs - scene.fx.clearedFlashMs - CLEARED_BACKDROP_DELAY_MS) / 200);
+  if (scene.practice) {
+    text(ctx, 'BOARD CLEARED', cx, cy - 110, C.white, F_BANNER * (0.8 + 0.2 * easeOut(grow)), 'center', C.amber, 22);
+    text(ctx, scene.practice.board ?? `STAGE ${pad2(scene.hud.stage)}`, cx, cy - 46, C.dim, F_SM, 'center');
+    statRow(ctx, cx, cy + 4, 'SCORE', thousands(scene.hud.score));
+    statRow(ctx, cx, cy + 38, 'MISTAKES', String(scene.practice.mistakes), scene.practice.mistakes > 0 ? C.red : C.amber);
+    prompt(ctx, 'PRESS ENTER FOR NEXT BOARD', cx, cy + 110, nowMs);
+    text(ctx, 'R RETRY THIS BOARD   ·   ESC TRAINING', cx, cy + 154, C.dim, F_SM, 'center');
+    return;
+  }
   text(ctx, 'STAGE CLEARED', cx, cy - 110, C.white, F_BANNER * (0.8 + 0.2 * easeOut(grow)), 'center', C.amber, 22);
   text(ctx, `STAGE ${pad2(scene.hud.stage)} DONE`, cx, cy - 46, C.dim, F_SM, 'center');
 
@@ -1151,9 +1197,9 @@ function drawMenu(ctx: Ctx, width: number, height: number, menu: MenuView): void
   const x0 = Math.round(cx - rowW / 2);
   let y = midY(height) - (menu.items.length * ROW) / 2 - 70;
 
-  text(ctx, menu.paused ? 'PAUSED' : 'OPTIONS', cx, y, C.amber, F_BANNER, 'center', C.amber, 16);
+  text(ctx, menu.title, cx, y, C.amber, F_BANNER, 'center', C.amber, 16);
   y += 62;
-  text(ctx, menu.paused ? 'THE CLOCK IS STOPPED' : 'SOUND AND KEYS', cx, y, C.dim, F_SM, 'center');
+  text(ctx, menu.subtitle, cx, y, C.dim, F_SM, 'center');
   y += 66;
 
   menu.items.forEach((item, i) => {
@@ -1166,7 +1212,7 @@ function drawMenu(ctx: Ctx, width: number, height: number, menu: MenuView): void
       rect(ctx, x0 - 14, y - 20, rowW + 28, 40, C.amber);
       ctx.restore();
     }
-    const color = on ? C.bg : C.amber;
+    const color = on ? C.bg : item.disabled ? C.dim : C.amber;
     text(ctx, item.label, x0, y, color, F_HUD);
     if (item.value !== undefined) {
       const shown = item.adjustable && on ? `< ${item.value} >` : item.value;
@@ -1176,7 +1222,8 @@ function drawMenu(ctx: Ctx, width: number, height: number, menu: MenuView): void
   });
 
   y += 26;
-  text(ctx, 'UP / DOWN  SELECT   ·   LEFT / RIGHT  CHANGE   ·   ENTER  CHOOSE   ·   ESC  CLOSE', cx, y, C.dim, F_SM, 'center');
+  const hint = menu.hint ?? 'UP / DOWN  SELECT   ·   LEFT / RIGHT  CHANGE   ·   ENTER  CHOOSE   ·   ESC  CLOSE';
+  text(ctx, hint, cx, y, C.dim, F_SM, 'center');
 }
 
 // Help screen geometry — `vim-lazyvim.test.ts` checks every key list against these numbers.
