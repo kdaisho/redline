@@ -11,14 +11,20 @@
 /* The room around the tube: black, so the amber is the only light. */
 html,
 body {
-  min-height: 100%;
+  height: 100%;
+  overflow: hidden; /* the canvas is fitted to the window; nothing to scroll to */
   background: #020302;
+}
+
+body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 #game {
   display: block;
-  /* center when it fits the viewport; overflow → scroll on both axes */
-  margin: 24px auto;
+  flex: none;
   /* same colour as the canvas clears to, so nothing flashes before the first frame */
   background: #060a07;
   /* the bezel: a hairline of dim amber and the faint spill of the phosphor */

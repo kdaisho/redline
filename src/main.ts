@@ -12,18 +12,22 @@ if (!canvas) throw new Error('REDLINE: #game canvas not found');
 const ctx = canvas.getContext('2d');
 if (!ctx) throw new Error('REDLINE: 2D context unavailable');
 
-// Logical render size; device-pixel-ratio scaling keeps strokes crisp.
-// Sane field size; the page scrolls if it overflows the viewport (KDA-59).
+// Logical render size. The canvas is scaled to fit the window (never above 1:1) so
+// the whole game is always on screen and the page never scrolls (#29); the backing
+// store follows the scaled size × device-pixel-ratio so glyphs stay crisp.
 const WIDTH = 1500;
 const HEIGHT = 1100;
+const MIN_FIT = 0.3; // a tiny window still gets a drawable canvas
 
 function resize() {
   const dpr = window.devicePixelRatio || 1;
-  canvas!.width = WIDTH * dpr;
-  canvas!.height = HEIGHT * dpr;
-  canvas!.style.width = `${WIDTH}px`;
-  canvas!.style.height = `${HEIGHT}px`;
-  ctx!.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const fit = Math.max(MIN_FIT, Math.min(1, window.innerWidth / WIDTH, window.innerHeight / HEIGHT));
+  const scale = fit * dpr;
+  canvas!.width = Math.round(WIDTH * scale);
+  canvas!.height = Math.round(HEIGHT * scale);
+  canvas!.style.width = `${WIDTH * fit}px`;
+  canvas!.style.height = `${HEIGHT * fit}px`;
+  ctx!.setTransform(scale, 0, 0, scale, 0, 0);
 }
 resize();
 window.addEventListener('resize', resize);
