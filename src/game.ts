@@ -237,7 +237,7 @@ export function applyScore(s: ScoreState, result: DeleteResult, nowMs: number): 
  */
 export class Game {
   private readonly ctx: CanvasRenderingContext2D;
-  private readonly width: number;
+  private width: number;
   private readonly height: number;
 
   private rafId = 0;
@@ -340,6 +340,11 @@ export class Game {
     });
     const vim = createVimKeymap((key) => this.onVimKey(key));
     this.keymaps = { standard, vim };
+  }
+
+  /** The frame widens with the window (#53); the board's size never follows it. */
+  setWidth(width: number): void {
+    this.width = width;
   }
 
   start(): void {
