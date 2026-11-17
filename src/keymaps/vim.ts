@@ -43,7 +43,13 @@ export function vimKeyName(e: KeyboardEvent): string | null {
   const special = SPECIAL[e.key];
   if (special) return special;
   // One printable character. Named keys (Shift, F1, Tab, Dead, …) are longer.
-  return e.key.length === 1 ? e.key : null;
+  if (e.key.length !== 1) return null;
+  // Caps Lock left on by accident would turn `hjkl` into `HJKL` (#51): undo its
+  // flip so letters mean what they would with it off. Shift still flips them.
+  if (e.getModifierState?.('CapsLock') && /^[a-z]$/i.test(e.key)) {
+    return e.key === e.key.toLowerCase() ? e.key.toUpperCase() : e.key.toLowerCase();
+  }
+  return e.key;
 }
 
 /**

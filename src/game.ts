@@ -274,6 +274,7 @@ export class Game {
   private detachAudio: (() => void) | null = null;
   private muted = false; // KDA-46: HUD reflection of the audio mute state
   private soundText = ''; // HUD SOUND readout: the two volumes (#14)
+  private capsLock = false; // #51: Caps Lock is on — Vim ignores it, the HUD warns
 
   // ── SFX bookkeeping (#14) ──
   private comboAlive = false; // a combo is running and its break has not been sounded yet
@@ -356,6 +357,9 @@ export class Game {
       busMute: (bus) => {
         toggleBusMute(bus);
         this.soundText = audioLabel();
+      },
+      capsLock: (on) => {
+        this.capsLock = on;
       },
       help: () => this.onHelp(),
       menu: () => this.onMenu(),
@@ -1360,6 +1364,7 @@ export class Game {
         maxStrikes: MAX_STRIKES,
         muted: this.muted,
         soundText: this.soundText,
+        capsLock: this.capsLock,
         stageLimitMs: this.stageLimitMs,
         stageRemainingMs: this.stageRemainingMs,
       },
