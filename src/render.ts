@@ -151,9 +151,28 @@ export interface Scene {
   menu: MenuView | null; // the pause menu (Esc, #33) or the training picker (#43) — covers the board
   practice: PracticeView | null; // free practice (#43): no limit, a mistake tally, the readout
   overReason: 'strikes' | 'timeout'; // why the run ended → game-over subtitle (KDA-59)
+  postmortem: PostMortem | null; // game over: what each strike deleted (#55); null without strikes
   best: number; // best score ever (localStorage), shown on start/over screens
   isNewBest: boolean; // this run beat the stored best
   countdownNum: number; // 3→2→1, shown while phase === 'countdown' (KDA-49)
+}
+
+/** One strike of a run, kept for the game-over cause panel (#55). */
+export interface StrikeRecord {
+  stage: number; // 1-based
+  keys: string; // the command as typed, e.g. `d3W`; '' when unknown
+  red: number;
+  blue: number;
+  before: { line: number; row: Block[] }[]; // the rows the delete touched, as they were
+  removed: { line: number; col: number }[]; // the coloured cells it took
+  after: Block[] | null; // the first touched row afterwards; null when the rows went entirely
+}
+
+/** Game over: the strikes (newest first) and which tab of the cause panel is up (#55). */
+export interface PostMortem {
+  strikes: StrikeRecord[];
+  tab: number; // into the tabs: TIME UP first on a timeout, then the strikes
+  sinceMs: number; // when the tab was picked — its slow-motion loop starts here
 }
 
 /** One row of the pause menu (#33) or the training picker (#43). */
@@ -1197,29 +1216,268 @@ function drawStageCleared(ctx: Ctx, width: number, height: number, scene: Scene,
 function drawEndScreen(ctx: Ctx, width: number, height: number, scene: Scene, nowMs: number, won: boolean): void {
   clearBand(ctx, width, height);
   const cx = width / 2;
-  let y = midY(height) - 190;
+  const tabs = won ? [] : causeTabs(scene);
+  // The panel's space is the tallest tab's, so switching tabs never moves the screen.
+  const panelH = tabs.length > 0 ? Math.max(...tabs.map((t) => causeHeight(t.rec))) : 0;
+  const head = 78 + (tabs.length > 0 ? 44 + CAUSE_TABS_H + panelH : 52); // title → first stat
+  const tail = 62 + 44; // last stat → prompt → ESC line
+  // A short window drops the four stat rows to one line to make room for the panel.
+  const band = height - FOOT_H - RULE_TOP;
+  const compact = tabs.length > 0 && head + 4 * 34 + tail + 90 > band;
+  const total = head + (compact ? 34 : 4 * 34) + tail;
+  let y = Math.max(RULE_TOP + 60, midY(height) - total / 2 - 4);
 
   const color = won ? C.amber : C.red;
   text(ctx, won ? 'YOU WIN' : 'GAME OVER', cx, y, color, F_TITLE, 'center', color, 22);
   y += 78;
   const why = won ? 'STAGE 50 CLEARED' : scene.overReason === 'timeout' ? 'TIME UP' : 'TWO MISTAKES';
   text(ctx, why, cx, y, C.dim, F_SM, 'center');
-  y += 52;
 
-  const rows: [string, string, string][] = [
-    ['STAGE', String(scene.hud.stage), C.amber],
-    ['SCORE', thousands(scene.hud.score), C.amber],
-    ['TIME', formatTime(scene.hud.timeMs), C.amber],
-    [`${modeInfo(scene.mode).label.toUpperCase()} BEST`, thousands(scene.best), scene.isNewBest ? C.white : C.amber],
-  ];
-  for (const [label, value, col] of rows) {
-    statRow(ctx, cx, y, label, value, col);
+  if (tabs.length > 0 && scene.postmortem) {
+    y += 44;
+    const tab = Math.min(scene.postmortem.tab, tabs.length - 1);
+    drawCauseTabs(ctx, cx, y, tabs.map((t) => t.label), tab);
+    const rec = tabs[tab].rec;
+    if (rec) drawCause(ctx, width, cx, y + CAUSE_TABS_H, rec, nowMs - scene.postmortem.sinceMs);
+    y += CAUSE_TABS_H + panelH;
+  } else y += 52;
+
+  const best = `${modeInfo(scene.mode).label.toUpperCase()} BEST`;
+  const bestColor = scene.isNewBest ? C.white : C.amber;
+  if (compact) {
+    statLine(ctx, cx, y, [
+      ['STAGE', String(scene.hud.stage), C.amber],
+      ['SCORE', thousands(scene.hud.score), C.amber],
+      ['TIME', formatTime(scene.hud.timeMs), C.amber],
+      [best, thousands(scene.best), bestColor],
+    ]);
     y += 34;
+  } else {
+    const rows: [string, string, string][] = [
+      ['STAGE', String(scene.hud.stage), C.amber],
+      ['SCORE', thousands(scene.hud.score), C.amber],
+      ['TIME', formatTime(scene.hud.timeMs), C.amber],
+      [best, thousands(scene.best), bestColor],
+    ];
+    for (const [label, value, col] of rows) {
+      statRow(ctx, cx, y, label, value, col);
+      y += 34;
+    }
   }
   if (scene.isNewBest) text(ctx, '** NEW BEST **', cx, y + 6, C.white, F_SM, 'center', C.amber, 10);
   y += 62;
   prompt(ctx, 'PRESS ENTER TO RESTART', cx, y, nowMs);
-  text(ctx, 'ESC FOR MENU', cx, y + 44, C.dim, F_SM, 'center');
+  const esc = tabs.length > 1 ? 'ESC FOR MENU   ·   LEFT / RIGHT  OTHER TAB' : 'ESC FOR MENU';
+  text(ctx, esc, cx, y + 44, C.dim, F_SM, 'center');
+}
+
+/** Stats on one centred line: `STAGE 7   SCORE 12,480   …` (dim labels, lit values). */
+function statLine(ctx: Ctx, cx: number, y: number, rows: [string, string, string][]): void {
+  const segs: [string, string][] = [];
+  rows.forEach(([label, value, col], i) => {
+    if (i > 0) segs.push(['     ', C.dim]);
+    segs.push([`${label} `, C.dim], [value, col]);
+  });
+  drawSegments(ctx, cx, y, segs, F_SM);
+}
+
+/** Coloured runs of text, centred as one line on `cx`. */
+function drawSegments(ctx: Ctx, cx: number, y: number, segs: [string, string][], px: number): void {
+  const step = adv(px);
+  let x = cx - (segs.reduce((n, [s]) => n + charCount(s), 0) * step) / 2;
+  for (const [s, col] of segs) {
+    text(ctx, s, x, y, col, px);
+    x += charCount(s) * step;
+  }
+}
+
+// ── game-over cause panel (#55) ────────────────────────────────────────────
+// What each strike deleted, on the board's own grid. A one-row delete is one row
+// on a loop: the line with what's about to go marked, the delete replayed in slow
+// motion, then the line as it ended up. A delete across rows shows them marked.
+const CAUSE_TABS_H = 30; // tabs centre → first diff row top
+const CAUSE_MAX_ROWS = 3; // rows of a multi-row delete shown before `+N MORE LINES`
+const CAUSE_SLOW = 3; // the replay's tube switch-off runs this many times slower
+const CAUSE_HOLD_MS = 1100; // the line with what's about to go marked
+const CAUSE_REST_MS = 1800; // the line as it ended up, before the loop restarts
+
+interface CauseTab {
+  label: string;
+  rec: StrikeRecord | null; // null: the TIME UP tab, which explains itself
+}
+
+function causeTabs(scene: Scene): CauseTab[] {
+  const pm = scene.postmortem;
+  if (!pm || scene.phase !== 'over' || pm.strikes.length === 0) return [];
+  const n = pm.strikes.length;
+  const tabs: CauseTab[] = [];
+  if (scene.overReason === 'timeout') tabs.push({ label: `TIME UP · STAGE ${pad2(scene.hud.stage)}`, rec: null });
+  pm.strikes.forEach((rec, i) => tabs.push({ label: `STRIKE ${n - i} · STAGE ${pad2(rec.stage)}`, rec }));
+  return tabs;
+}
+
+/** One replayed row, or the touched rows (capped, plus a `+N MORE LINES` row). */
+function causeRows(rec: StrikeRecord): number {
+  const shown = Math.min(rec.before.length, CAUSE_MAX_ROWS);
+  return shown + (rec.before.length > shown ? 1 : 0);
+}
+
+/** Height from the first diff row's top to the first stat row's centre. */
+function causeHeight(rec: StrikeRecord | null): number {
+  return rec ? causeRows(rec) * LH + 74 : 20;
+}
+
+function drawCauseTabs(ctx: Ctx, cx: number, y: number, labels: string[], sel: number): void {
+  const step = adv(F_SM);
+  const PADX = 10;
+  const GAP = 18;
+  const widths = labels.map((l) => charCount(l) * step + PADX * 2);
+  let x = cx - (widths.reduce((a, b) => a + b, 0) + GAP * (labels.length - 1)) / 2;
+  labels.forEach((label, i) => {
+    const w = widths[i];
+    if (i === sel) {
+      rect(ctx, snap(x), y - 15, w, 30, C.amber);
+      text(ctx, label, x + PADX, y, C.bg, F_SM);
+    } else {
+      ctx.strokeStyle = C.dim;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(snap(x) + 0.5, y - 14.5, w - 1, 29);
+      text(ctx, label, x + PADX, y, C.dim, F_SM);
+    }
+    x += w + GAP;
+  });
+}
+
+/**
+ * The columns a one-row delete took: what's left between the line's common
+ * prefix and suffix with the row as it ended up (the whole row when it went).
+ */
+function removedSpan(before: Block[], after: Block[] | null): [number, number] {
+  if (!after) return [0, before.length];
+  const same = (a: Block, b: Block) => a.ch === b.ch && a.color === b.color;
+  let k = 0;
+  while (k < before.length && k < after.length && same(before[k], after[k])) k++;
+  let s = 0;
+  while (s < before.length - k && s < after.length - k && same(before[before.length - 1 - s], after[after.length - 1 - s])) s++;
+  return [k, before.length - s];
+}
+
+function drawCause(ctx: Ctx, width: number, cx: number, top: number, rec: StrikeRecord, ageMs: number): void {
+  const single = rec.before.length === 1;
+  const span = single ? removedSpan(rec.before[0].row, rec.after) : null;
+  const taken = new Set(rec.removed.map((c) => `${c.line}:${c.col}`));
+  const rows = causeRows(rec);
+  // Centred on the widest row, but never left of where the board itself starts.
+  const widest = Math.max(rec.after?.length ?? 0, ...rec.before.map((b) => b.row.length));
+  const ox = Math.max(FIELD_OX, Math.round(cx - (widest * BW) / 2));
+
+  // Rows sit on the board's own grid; one wider than the frame is cut at the right rule.
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, top, width - PAD, rows * LH);
+  ctx.clip();
+  if (span) {
+    causeGutter(ctx, ox, rec.before[0].line, top);
+    drawCauseReplay(ctx, ox, rec, span, top, ageMs);
+  } else {
+    let y = top;
+    for (const { line, row } of rec.before.slice(0, CAUSE_MAX_ROWS)) {
+      causeGutter(ctx, ox, line, y);
+      drawCauseRow(ctx, ox, row, y, (c) => taken.has(`${line}:${c}`));
+      y += LH;
+    }
+    const more = rec.before.length - CAUSE_MAX_ROWS;
+    if (more > 0) text(ctx, `+${more} MORE LINE${more > 1 ? 'S' : ''}`, ox, y + LH / 2, C.dim, F_SM);
+  }
+  ctx.restore();
+
+  const segs: [string, string][] = [];
+  if (rec.keys) segs.push([rec.keys, C.white], ['  ->  ', C.dim]);
+  if (rec.red > 0) segs.push([`${rec.red} RED`, C.red], ['  ·  ', C.dim]);
+  segs.push([`${rec.blue} BLUE`, C.blue]);
+  drawSegments(ctx, cx, top + rows * LH + 24, segs, F_HUD);
+}
+
+/** The row's line number, as the board shows it. */
+function causeGutter(ctx: Ctx, ox: number, line: number, top: number): void {
+  text(ctx, pad2(line + 1), ox - 10, top + LH / 2, C.dim, F_SM, 'right');
+}
+
+/** A board row; `gone(col)` cells get a red wash, and a struck-through blue one stands out. */
+function drawCauseRow(ctx: Ctx, ox: number, row: Block[], top: number, gone: (col: number) => boolean): void {
+  const red = getAtlas(S_RED);
+  const blue = getAtlas(S_BLUE);
+  for (let c = 0; c < row.length; c++) {
+    const b = row[c];
+    const x = ox + c * BW;
+    const g = gone(c);
+    if (g) rect(ctx, snap(x), top + CELL_TOP, BW + 0.5, CELL_H, rgba(C.red, b.color === 'blue' ? 0.35 : 0.16));
+    if (b.color === 'red') blit(ctx, red, S_RED, b.ch, x, top + CELL_BASE);
+    else if (b.color === 'blue') {
+      blit(ctx, blue, S_BLUE, b.ch, x, top + CELL_BASE);
+      if (g) rect(ctx, snap(x), top + LH / 2 - 1, BW + 0.5, 2, C.red);
+    }
+  }
+}
+
+/** The replay at rest: the line as it ended up, or a note that it went. */
+function drawCauseAfter(ctx: Ctx, ox: number, after: Block[] | null, top: number): void {
+  if (after) drawCauseRow(ctx, ox, after, top, () => false);
+  else text(ctx, '(LINE REMOVED)', ox, top + LH / 2, C.dim, F_SM);
+}
+
+/**
+ * Replay a one-row delete on a loop: the line with the span about to go marked,
+ * then the game's tube switch-off at 1/CAUSE_SLOW speed (a kept blue flickers
+ * out in red), the row sliding shut, and the result held.
+ */
+function drawCauseReplay(ctx: Ctx, ox: number, rec: StrikeRecord, span: [number, number], top: number, ageMs: number): void {
+  const del = DEL_MS * CAUSE_SLOW;
+  const close = CLOSE_MS * CAUSE_SLOW;
+  const cycle = CAUSE_HOLD_MS + del + close + CAUSE_REST_MS;
+  const t = ((ageMs % cycle) + cycle) % cycle;
+  if (t >= CAUSE_HOLD_MS + del + close) {
+    drawCauseAfter(ctx, ox, rec.after, top);
+    return;
+  }
+  const row = rec.before[0].row;
+  const [from, to] = span;
+  if (t < CAUSE_HOLD_MS) {
+    drawCauseRow(ctx, ox, row, top, (c) => c >= from && c < to);
+    return;
+  }
+  const dying = t >= CAUSE_HOLD_MS && t < CAUSE_HOLD_MS + del;
+  const p = dying ? (t - CAUSE_HOLD_MS) / del : 0;
+  const shut = t >= CAUSE_HOLD_MS + del ? easeOut((t - CAUSE_HOLD_MS - del) / close) : 0;
+  const red = getAtlas(S_RED);
+  const blue = getAtlas(S_BLUE);
+  const bloom = getAtlas(S_BLOOM);
+  const base = top + CELL_BASE;
+  const blueOn = Math.floor((t - CAUSE_HOLD_MS) / (60 * CAUSE_SLOW)) % 2 === 0;
+  for (let c = 0; c < row.length; c++) {
+    const b = row[c];
+    if (b.color === null) continue;
+    const inSpan = c >= from && c < to;
+    if (inSpan) {
+      if (!dying) continue; // gone; the row is closing over it
+      const x = ox + c * BW;
+      if (b.color === 'blue') {
+        if (blueOn) blit(ctx, red, S_RED, b.ch, x, base);
+      } else if (p < 0.2) blit(ctx, bloom, S_BLOOM, b.ch, x, base);
+      else if (p < 0.6) blit(ctx, bloom, S_BLOOM, b.ch, x, base, 1 - ((p - 0.2) / 0.4) * 0.93, top + LH / 2);
+      continue;
+    }
+    const x = ox + (c >= to ? c - (to - from) * shut : c) * BW;
+    if (b.color === 'red') blit(ctx, red, S_RED, b.ch, x, base);
+    else blit(ctx, blue, S_BLUE, b.ch, x, base);
+  }
+  if (dying && p >= 0.6 && row.slice(from, to).some((b) => b.color === 'red')) {
+    // one bright scanline across the span, shrinking to a dot
+    const q = (p - 0.6) / 0.4;
+    const w = (to - from) * BW;
+    const lw = Math.max(4, w * (1 - easeOut(q)));
+    glowFill(ctx, C.white, C.white, 18, () => ctx.rect(ox + from * BW + w / 2 - lw / 2, top + LH / 2 - 1.5, lw, 3));
+  }
 }
 
 /**

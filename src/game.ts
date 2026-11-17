@@ -1,6 +1,15 @@
-import { render, type Scene, type Flash, type MenuItem, type MenuView, type PracticeView } from './render.ts';
+import {
+  render,
+  type Scene,
+  type Flash,
+  type MenuItem,
+  type MenuView,
+  type PracticeView,
+  type StrikeRecord,
+} from './render.ts';
 import {
   type FieldState,
+  type Line,
   type MoveAction,
   type DeleteResult,
   type Chord,
@@ -268,6 +277,9 @@ export class Game {
     return this.kind !== 'run';
   }
   private overReason: 'strikes' | 'timeout' = 'strikes'; // why the run ended (game-over subtitle)
+  private strikeLog: StrikeRecord[] = []; // this run's strikes, oldest first — the game-over cause panel (#55)
+  private causeTab = 0; // the cause panel's tab on game over
+  private causeTabMs = 0; // when that tab was picked (restarts its slow-motion loop)
   private best: Best = { score: 0, stage: 0, timeMs: 0 };
   private isNewBest = false;
   private detachInput: (() => void) | null = null;
@@ -552,6 +564,7 @@ export class Game {
   /** Keys while the pause menu is up. Every key is the menu's, so nothing leaks to the board. */
   private onOverlayKey(e: KeyboardEvent): boolean {
     if (this.phase === 'training' && this.overlay === 'none') return this.onTrainingKey(e);
+    if (this.phase === 'over' && this.overlay === 'none' && !this.helpOpen) return this.onCauseKey(e);
     if (this.overlay !== 'menu') return false;
     if (e.metaKey || e.ctrlKey) return false; // leave browser shortcuts alone
     const items = this.menuItems();
@@ -577,6 +590,21 @@ export class Game {
     else if (k === 'ArrowRight' || k === 'l') adjust(1);
     else if ((k === 'Enter' || k === ' ') && !e.repeat) this.activateMenuItem(item);
     else if (k === 'm' && !e.repeat) this.onMute();
+    return true;
+  }
+
+  /** Game over: Left / Right (or h / l) switch the cause panel's tab (#55). */
+  private onCauseKey(e: KeyboardEvent): boolean {
+    const n = this.causeTabCount();
+    if (n < 2 || e.metaKey || e.ctrlKey || e.altKey) return false;
+    const d = e.key === 'ArrowLeft' || e.key === 'h' ? -1 : e.key === 'ArrowRight' || e.key === 'l' ? 1 : 0;
+    if (d === 0) return false;
+    const next = Math.max(0, Math.min(n - 1, this.causeTab + d));
+    if (next !== this.causeTab) {
+      this.causeTab = next;
+      this.causeTabMs = performance.now();
+      sfx('menuMove');
+    }
     return true;
   }
 
@@ -965,6 +993,7 @@ export class Game {
     this.stageClock.reset();
     this.scoreState = initialScore();
     this.strikes = 0;
+    this.strikeLog = [];
     this.goalCol = 0;
     this.flashes = [];
     this.comboPulseMs = -Infinity;
@@ -1101,14 +1130,15 @@ export class Game {
     }
     const size = this.fieldSize();
     const before = this.vimSnapshot();
+    const prior = this.untimed ? null : this.priorLines();
     const outcome =
       this.untimed
         ? this.undo.record(this.field, () => this.vim.key(this.field, key), this.lessonCounters())
         : this.vim.key(this.field, key);
     this.markInput();
-    if (this.untimed) this.trackVimKeys(key, outcome.deleted);
+    const keys = this.trackVimKeys(key, outcome.deleted);
     if (outcome.deleted) {
-      this.applyDelete(outcome.deleted, size);
+      this.applyDelete(outcome.deleted, size, prior && { keys, prior });
     } else {
       // Mode change, half-typed command, move, or a key that did nothing — the
       // engine stays pure; the sound is read off its state before and after.
@@ -1122,15 +1152,22 @@ export class Game {
    * The readout's view of Vim: collect the keys of the command being typed; when
    * one deletes, show them with what it took. A finished motion starts over.
    */
-  private trackVimKeys(key: string, deleted: DeleteResult | null): void {
+  private trackVimKeys(key: string, deleted: DeleteResult | null): string {
     this.vimKeys.push(vimKeyLabel(key));
     if (deleted) {
-      this.readout = `${this.vimKeys.join('')} -> ${describeDelete(deleted)}`;
+      const keys = this.vimKeys.join('');
+      this.readout = `${keys} -> ${describeDelete(deleted)}`;
       this.vimKeys = [];
-      return;
+      return keys;
     }
     const st = this.vim.status();
     if (st.mode === 'normal' && st.pending === '' && st.prompt === null && st.flash === null) this.vimKeys = [];
+    return '';
+  }
+
+  /** The board before a delete in a run, so a strike can show what it took (#55). */
+  private priorLines(): Line[] {
+    return this.field.lines.map((ln) => ln.slice()); // rows are edited in place
   }
 
   private onDelete(action: DeleteAction): void {
@@ -1144,7 +1181,9 @@ export class Game {
       return;
     }
     const size = this.fieldSize();
-    this.applyDelete(this.runDelete(action), size);
+    const keys = standardKeys(action, this.field.select !== null);
+    const prior = this.priorLines();
+    this.applyDelete(this.runDelete(action), size, { keys, prior });
   }
 
   private runDelete(action: DeleteAction): DeleteResult {
@@ -1157,7 +1196,11 @@ export class Game {
    * action for scoring and mistakes. `before` is the field's size before the
    * delete ran (the result only lists the coloured blocks it removed).
    */
-  private applyDelete(result: DeleteResult, before: { chars: number; rows: number }): void {
+  private applyDelete(
+    result: DeleteResult,
+    before: { chars: number; rows: number },
+    cause: { keys: string; prior: Line[] } | null = null,
+  ): void {
     this.goalCol = this.field.caret.col;
     if (this.kind === 'lesson' && (result.red > 0 || result.blue > 0)) this.lessonDeletes++;
     this.markInput();
@@ -1183,7 +1226,7 @@ export class Game {
       // game over (endRun); otherwise a running combo is heard breaking.
       sfx('mistake');
       sfx('strike', undefined, SFX_STRIKE_DELAY);
-      this.registerMistake();
+      this.registerMistake(result, cause);
       if (this.phase === 'playing' && comboWasAlive) sfx('comboBreak', undefined, SFX_COMBO_BREAK_DELAY);
     } else {
       // The delete's own sound, by chord and size (several rows → the big chord).
@@ -1254,15 +1297,45 @@ export class Game {
   }
 
   /** A blue-touching delete = one strike; two strikes ends the run (spec §3). */
-  private registerMistake(): void {
+  private registerMistake(result: DeleteResult, cause: { keys: string; prior: Line[] } | null): void {
     if (this.untimed) {
       this.mistakes++; // counted, never fatal (#43)
       this.strikeFlashMs = performance.now();
       return;
     }
+    if (cause) this.strikeLog.push(this.strikeRecord(result, cause.keys, cause.prior));
     this.strikes++;
     this.strikeFlashMs = performance.now(); // red flash
     if (this.strikes >= MAX_STRIKES) this.endRun('strikes');
+  }
+
+  /**
+   * What a strike deleted, for the game-over cause panel (#55): the rows it
+   * touched as they were, the cells it took, and the first of them afterwards
+   * (null when the rows went entirely, e.g. `dd`).
+   */
+  private strikeRecord(result: DeleteResult, keys: string, prior: Line[]): StrikeRecord {
+    const lines = result.cells.map((c) => c.line);
+    const top = Math.min(...lines);
+    const bottom = Math.max(...lines);
+    const rowsGone = prior.length - this.field.lines.length;
+    const before: StrikeRecord['before'] = [];
+    for (let l = top; l <= bottom; l++) before.push({ line: l, row: prior[l] });
+    return {
+      stage: this.stageIndex + 1,
+      keys,
+      red: result.red,
+      blue: result.blue,
+      before,
+      removed: result.cells.map((c) => ({ line: c.line, col: c.col })),
+      after: rowsGone >= bottom - top + 1 ? null : (this.field.lines[top] ?? []).slice(),
+    };
+  }
+
+  /** The cause panel's tabs: TIME UP first on a timeout, then each strike. */
+  private causeTabCount(): number {
+    if (this.strikeLog.length === 0) return 0;
+    return this.strikeLog.length + (this.overReason === 'timeout' ? 1 : 0);
   }
 
   /** End the run in game over, freezing both clocks at the exact instant (KDA-59). */
@@ -1273,6 +1346,8 @@ export class Game {
     this.helpFromMenu = false;
     this.phase = 'over';
     this.overReason = reason;
+    this.causeTab = 0; // the newest strike, or TIME UP
+    this.causeTabMs = performance.now();
     const now = performance.now();
     this.clock.freeze(now); // capture the final time precisely
     this.stageClock.freeze(now);
@@ -1358,6 +1433,10 @@ export class Game {
       menu: this.overlay === 'menu' ? this.menuView() : this.phase === 'training' ? this.trainingView() : null,
       practice: this.untimed ? this.practiceView() : null,
       overReason: this.overReason,
+      postmortem:
+        this.phase === 'over' && this.strikeLog.length > 0
+          ? { strikes: [...this.strikeLog].reverse(), tab: this.causeTab, sinceMs: this.causeTabMs }
+          : null,
       best: this.best.score,
       isNewBest: this.isNewBest,
       countdownNum: this.countdownDigit(),
