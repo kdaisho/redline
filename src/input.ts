@@ -66,6 +66,8 @@ export interface InputHandlers {
   overlayKey?(e: KeyboardEvent): boolean;
   /** A digit key on a screen: pick the mode at this 0-based picker index. */
   pickMode(index: number): void;
+  /** Caps Lock turned on / off, as read off the latest key event (#51). */
+  capsLock?(on: boolean): void;
   /** Tab on a screen: step to the next mode. */
   cycleMode(): void;
   /** S on a screen: open the soundtrack page (#31). The game decides which screens allow it. */
@@ -170,7 +172,18 @@ export function attachInput(handlers: InputHandlers, target: Window = window): (
     return false;
   };
 
+  // Caps Lock state (#51), read off every key event. The Caps Lock key's own
+  // events are not reliable on macOS, so any key will do.
+  let capsLock = false;
+  const trackCapsLock = (e: KeyboardEvent) => {
+    const on = e.getModifierState?.('CapsLock') ?? false;
+    if (on === capsLock) return;
+    capsLock = on;
+    handlers.capsLock?.(on);
+  };
+
   const onKeyDown = (e: KeyboardEvent) => {
+    trackCapsLock(e);
     // Function keys are the game's own in every mode and every phase — no mode
     // can claim them, so help, mute and the volumes are always reachable.
     if (e.key === 'F1' || e.key === 'F2') {
@@ -237,6 +250,7 @@ export function attachInput(handlers: InputHandlers, target: Window = window): (
   };
 
   const onKeyUp = (e: KeyboardEvent) => {
+    trackCapsLock(e);
     repeater.release(e.code);
   };
   const onBlur = () => repeater.stop();

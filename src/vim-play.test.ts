@@ -12,9 +12,14 @@ import { Vim } from './vim.ts';
 import { applyScore, initialScore, CHORD_MULT } from './game.ts';
 
 /** A keydown-shaped event good enough for the controller (Node has no KeyboardEvent). */
-function keyEvent(type: string, key: string, mods: Partial<Record<'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey' | 'repeat', boolean>> = {}) {
+function keyEvent(
+  type: string,
+  key: string,
+  { capsLock = false, ...mods }: Partial<Record<'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey' | 'repeat' | 'capsLock', boolean>> = {},
+) {
   return Object.assign(new Event(type, { cancelable: true }), {
     key,
+    getModifierState: (m: string) => m === 'CapsLock' && capsLock,
     code: `Key:${key.toLowerCase()}`,
     ctrlKey: false,
     metaKey: false,
@@ -50,6 +55,16 @@ describe('vim key names', () => {
     expect(name('F1')).toBeNull();
     expect(name('Tab')).toBeNull();
   });
+
+  it('ignores Caps Lock: letters mean what they would with it off (#51)', () => {
+    expect(name('J', { capsLock: true })).toBe('j');
+    expect(name('D', { capsLock: true })).toBe('d');
+    expect(name('g', { capsLock: true, shiftKey: true })).toBe('G'); // Shift still flips
+    expect(name('$', { capsLock: true, shiftKey: true })).toBe('$');
+    expect(name('4', { capsLock: true })).toBe('4');
+    expect(name('Escape', { capsLock: true })).toBe('<Esc>');
+    expect(name('V', { capsLock: true, ctrlKey: true })).toBe('<C-v>');
+  });
 });
 
 describe('controller + vim keymap', () => {
@@ -83,6 +98,7 @@ describe('controller + vim keymap', () => {
       menu: () => calls.push('menu'),
       pickMode: (i) => calls.push(`pick${i}`),
       cycleMode: () => calls.push('cycle'),
+      capsLock: (on) => calls.push(on ? 'caps on' : 'caps off'),
       isActive: () => active,
     };
     detach = attachInput(handlers, target as unknown as Window);
@@ -115,6 +131,15 @@ describe('controller + vim keymap', () => {
     press('x');
     vi.advanceTimersByTime(1000);
     expect(rows()[0]).toBe('oo bar'); // exactly one character gone
+  });
+
+  it('Caps Lock: the board reacts as if it were off, and the change is reported once (#51)', () => {
+    press('D', { capsLock: true });
+    press('W', { capsLock: true });
+    expect(rows()).toEqual(['bar', 'baz']);
+    expect(calls).toEqual(['caps on']);
+    press('x');
+    expect(calls).toEqual(['caps on', 'caps off']);
   });
 
   it('OS key-repeat events are ignored', () => {

@@ -133,6 +133,7 @@ export interface HudModel {
   maxStrikes: number;
   muted: boolean; // audio mute state (KDA-46)
   soundText?: string; // volume readout when not muted, e.g. `♪ M6 S7` (#14); shown as `SND M6 S7`
+  capsLock?: boolean; // Caps Lock is on (#51): a red CAPS warning
   stageLimitMs: number; // per-stage time budget (KDA-59); 0 before a run starts
   stageRemainingMs: number; // time left on the current stage's countdown
 }
@@ -816,7 +817,9 @@ function drawHud(ctx: Ctx, width: number, hud: HudModel, fx: Fx, mode: Mode, now
   }
   rx -= gtext(ctx, hud.muted ? 'SND OFF' : hud.soundText ? `SND ${hud.soundText.replace(/^♪\s*/, '')}` : 'SND ON', rx, y, hud.muted ? S_HUD_DIM : S_HUD, 'right') + GAP;
   rx -= gtext(ctx, modeInfo(mode).label.toUpperCase(), rx, y, S_HUD, 'right') + KV;
-  gtext(ctx, 'MODE', rx, y, S_HUD_DIM, 'right');
+  rx -= gtext(ctx, 'MODE', rx, y, S_HUD_DIM, 'right') + GAP;
+  // Caps Lock (#51): Vim ignores it, but it stays on outside the game
+  if (hud.capsLock) gtext(ctx, 'CAPS', rx, y, S_HUD_RED, 'right');
 
   // row 2 in practice: no limit, so the readout of the last command takes it (#43)
   const y2 = HUD_Y2;
