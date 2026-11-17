@@ -15,22 +15,27 @@ if (!ctx) throw new Error('REDLINE: 2D context unavailable');
 // Logical render size. The canvas is scaled to fit the window (never above 1:1) so
 // the whole game is always on screen and the page never scrolls (#29); the backing
 // store follows the scaled size × device-pixel-ratio so glyphs stay crisp.
+// WIDTH × HEIGHT is the minimum frame. A window wider than its shape widens the
+// frame — HUD, rules, footer, overlays — to fill it (#53); the board itself is
+// always sized from WIDTH, so a stage has the same shape on every screen.
 const WIDTH = 1500;
 const HEIGHT = 1100;
 const MIN_FIT = 0.3; // a tiny window still gets a drawable canvas
 
+let frameWidth = WIDTH;
+
 function resize() {
   const dpr = window.devicePixelRatio || 1;
   const fit = Math.max(MIN_FIT, Math.min(1, window.innerWidth / WIDTH, window.innerHeight / HEIGHT));
+  frameWidth = Math.max(WIDTH, Math.floor(window.innerWidth / fit));
   const scale = fit * dpr;
-  canvas!.width = Math.round(WIDTH * scale);
+  canvas!.width = Math.round(frameWidth * scale);
   canvas!.height = Math.round(HEIGHT * scale);
-  canvas!.style.width = `${WIDTH * fit}px`;
+  canvas!.style.width = `${frameWidth * fit}px`;
   canvas!.style.height = `${HEIGHT * fit}px`;
   ctx!.setTransform(scale, 0, 0, scale, 0, 0);
+  game.setWidth(frameWidth);
 }
-resize();
-window.addEventListener('resize', resize);
 
 // Moving the window to a display with another pixel ratio fires no resize (#35).
 // A resolution query matches only the current ratio, so re-arm it after each change.
@@ -46,11 +51,14 @@ function watchPixelRatio(): void {
     { once: true },
   );
 }
-watchPixelRatio();
 
-// Tell the stage generator how many blocks/rows fit at this canvas size.
+// Tell the stage generator how many blocks/rows fit — always at the minimum frame,
+// never the window's, so boards don't depend on the screen.
 setMaxStageCols(playfieldCols(WIDTH));
 setMaxStageRows(playfieldRows(HEIGHT));
 
 const game = new Game(ctx, WIDTH, HEIGHT);
+resize();
+window.addEventListener('resize', resize);
+watchPixelRatio();
 game.start();
